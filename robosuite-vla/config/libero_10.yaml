@@ -1,0 +1,21 @@
+# LIBERO-10 / LIBERO-Long: 10 tasks, mixed complexity, longer horizons
+# Tests: sustained multi-step manipulation
+
+defaults:
+  - default
+
+suite:
+  name: "libero_10"
+  n_tasks: 10
+  description: "Mixed complexity, longer horizon tasks"
+
+training:
+  total_steps: 30000             # More steps for longer-horizon tasks
+  batch_size: 32                 # Smaller batch for longer sequences
+  output_dir: "outputs/checkpoints/smolvla_10"
+
+env:
+  max_episode_steps: 800         # Longer episodes
+
+data:
+  hf_repo: "yifengzhu-hf/libero_10_no_noops"

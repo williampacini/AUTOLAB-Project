@@ -1,0 +1,67 @@
+# Default configuration for SmolVLA × LIBERO training and evaluation
+
+# --- Environment ---
+env:
+  mujoco_gl: "osmesa"            # "egl" for GPU, "osmesa" for CPU headless
+  camera_name: "agentview"
+  camera_height: 128
+  camera_width: 128
+  control_freq: 20               # Hz
+  action_dim: 7                  # [dx, dy, dz, dax, day, daz, gripper]
+  max_episode_steps: 600
+
+# --- Data ---
+data:
+  libero_dir: "data/libero_datasets"
+  demos_per_task: 50
+  image_size: 256                # Upscale from 128 for SmolVLA
+  filter_failed: true            # Remove failed demos from training
+  cameras:
+    - "agentview"
+    # - "robot0_eye_in_hand"     # Enable for wrist camera
+
+# --- Training ---
+training:
+  model: "lerobot/smolvla_base"
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  total_steps: 20000
+  save_freq: 5000
+  eval_freq: 2000
+  gradient_accumulation: 1
+  mixed_precision: "bf16"
+  seed: 42
+  n_action_steps: 50             # Action chunking (SmolVLA default)
+
+# --- Evaluation ---
+eval:
+  n_episodes_per_task: 50
+  max_steps: 600
+  seeds: [42, 123, 456]          # 3 seeds for reproducibility
+  record_video: true
+  video_freq: 10                 # Record every Nth episode
+
+# --- LIBERO-PRO ---
+libero_pro:
+  perturbation_types:
+    - "object"
+    - "position"
+    - "instruction"
+    - "environment"
+    - "combined"
+
+# --- Logging ---
+logging:
+  wandb_project: "smolvla-libero"
+  wandb_entity: null             # Set in .env or override
+  log_freq: 100
+  save_gifs: true
+
+# --- Paths ---
+paths:
+  output_dir: "outputs"
+  checkpoint_dir: "outputs/checkpoints"
+  video_dir: "outputs/videos"
+  results_dir: "outputs/results"

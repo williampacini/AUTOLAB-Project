@@ -1,0 +1,18 @@
+# LIBERO-Goal: 10 tasks, same objects/locations, different goals
+# Tests: procedural understanding and goal-conditioned behavior
+
+defaults:
+  - default
+
+suite:
+  name: "libero_goal"
+  n_tasks: 10
+  description: "Same scene, different task objectives"
+
+training:
+  total_steps: 20000
+  batch_size: 64
+  output_dir: "outputs/checkpoints/smolvla_goal"
+
+data:
+  hf_repo: "yifengzhu-hf/libero_goal_no_noops"

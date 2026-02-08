@@ -1,0 +1,18 @@
+# LIBERO-Spatial: 10 tasks, same objects, different spatial arrangements
+# Tests: spatial reasoning
+
+defaults:
+  - default
+
+suite:
+  name: "libero_spatial"
+  n_tasks: 10
+  description: "Same objects in different spatial arrangements"
+
+training:
+  total_steps: 20000
+  batch_size: 64
+  output_dir: "outputs/checkpoints/smolvla_spatial"
+
+data:
+  hf_repo: "yifengzhu-hf/libero_spatial_no_noops"

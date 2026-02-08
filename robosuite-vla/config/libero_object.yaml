@@ -1,0 +1,18 @@
+# LIBERO-Object: 10 tasks, same locations, different objects
+# Tests: object recognition and generalization
+
+defaults:
+  - default
+
+suite:
+  name: "libero_object"
+  n_tasks: 10
+  description: "Same spatial layout, different objects"
+
+training:
+  total_steps: 20000
+  batch_size: 64
+  output_dir: "outputs/checkpoints/smolvla_object"
+
+data:
+  hf_repo: "yifengzhu-hf/libero_object_no_noops"

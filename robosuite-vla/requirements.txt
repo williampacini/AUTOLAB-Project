@@ -1,0 +1,46 @@
+# Core simulation
+robosuite>=1.4.1,<1.5
+mujoco>=3.0
+numpy>=2.0,<2.1
+
+# LIBERO dependencies
+robomimic==0.2.0
+bddl==1.0.1
+hydra-core>=1.2
+easydict
+einops
+cloudpickle
+gym==0.25.2
+
+# SmolVLA / LeRobot training
+# Install lerobot separately: pip install -e ".[smolvla]"
+torch>=2.0
+torchvision>=0.15
+transformers>=4.40
+accelerate>=0.30
+datasets>=2.18
+safetensors
+huggingface-hub>=0.23
+
+# Data processing
+h5py>=3.0
+Pillow>=9.0
+imageio[ffmpeg]
+imageio
+
+# Visualization
+matplotlib>=3.5
+seaborn
+pandas
+
+# Experiment tracking
+wandb
+
+# Configuration
+omegaconf>=2.3
+pyyaml
+
+# Utilities
+tqdm
+rich
+python-dotenv
