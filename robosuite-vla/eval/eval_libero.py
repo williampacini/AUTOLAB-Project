@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def load_policy(checkpoint_path, device="cuda"):
     """Load a trained SmolVLA policy from checkpoint."""
     try:
-        from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+        from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
         policy = SmolVLAPolicy.from_pretrained(checkpoint_path)
         policy.to(device)
         policy.eval()
