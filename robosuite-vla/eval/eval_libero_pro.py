@@ -20,10 +20,24 @@ import os
 from pathlib import Path
 
 import numpy as np
+import torch
 from tqdm import tqdm
 
 os.environ.setdefault("MUJOCO_GL", "osmesa")
 os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
+
+# Monkey-patch torch.load for LIBERO compatibility (PyTorch 2.6+ defaults to
+# weights_only=True but LIBERO init states contain numpy arrays)
+_original_torch_load = torch.load
+
+
+def _patched_torch_load(*args, **kwargs):
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _original_torch_load(*args, **kwargs)
+
+
+torch.load = _patched_torch_load
 
 ROOT = Path(__file__).resolve().parent.parent
 PRO_DIR = ROOT / "data" / "LIBERO-PRO"
@@ -220,6 +234,10 @@ def evaluate_pro(checkpoint_path, suite_name, perturbation_types=None,
                 for ep in range(min(n_episodes, 10)):  # Fewer episodes per perturbation config
                     np.random.seed(seed + task_id * 1000 + ep)
                     obs = env.reset()
+
+                    # Reset policy internal state at start of each episode
+                    if policy is not None:
+                        policy.reset()
 
                     # Apply perturbation
                     obs = apply_perturbation(env, obs, config)

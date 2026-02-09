@@ -16,11 +16,25 @@ import time
 from pathlib import Path
 
 import numpy as np
+import torch
 from tqdm import tqdm
 
 # Headless rendering — MUST be before any robosuite import
 os.environ.setdefault("MUJOCO_GL", "osmesa")
 os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
+
+# Monkey-patch torch.load for LIBERO compatibility (PyTorch 2.6+ defaults to
+# weights_only=True but LIBERO init states contain numpy arrays)
+_original_torch_load = torch.load
+
+
+def _patched_torch_load(*args, **kwargs):
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _original_torch_load(*args, **kwargs)
+
+
+torch.load = _patched_torch_load
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -69,17 +83,43 @@ def get_action(policy, obs, task_language, device="cuda"):
     if policy is None:
         return np.random.uniform(-0.3, 0.3, size=7)
 
-    import torch
     from PIL import Image as PILImage
 
-    # Prepare observation for SmolVLA
-    image = np.flip(obs.get("agentview_image", np.zeros((128, 128, 3), dtype=np.uint8)), axis=0)
-    pil_image = PILImage.fromarray(image).resize((256, 256))
+    # Camera 1: agentview (main workspace camera)
+    agentview = np.flip(
+        obs.get("agentview_image", np.zeros((128, 128, 3), dtype=np.uint8)), axis=0
+    )
+    agentview_pil = PILImage.fromarray(agentview).resize((256, 256))
 
-    # Build observation dict for policy
+    # Camera 2: wrist / eye-in-hand camera
+    wrist = obs.get("robot0_eye_in_hand_image", None)
+    if wrist is not None:
+        wrist = np.flip(wrist, axis=0)
+        wrist_pil = PILImage.fromarray(wrist).resize((256, 256))
+    else:
+        wrist_pil = PILImage.fromarray(
+            np.zeros((128, 128, 3), dtype=np.uint8)
+        ).resize((256, 256))
+
+    # Build state from actual robot proprioception
+    eef_pos = obs.get("robot0_eef_pos", np.zeros(3))
+    eef_quat = obs.get("robot0_eef_quat", np.zeros(4))
+    state = np.concatenate([eef_pos, eef_quat]).astype(np.float32)
+
+    # SmolVLA expects observation.images.image / observation.images.image2
     obs_dict = {
-        "observation.image": torch.from_numpy(np.array(pil_image)).permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0,
-        "observation.state": torch.zeros(1, 7).to(device),  # Placeholder
+        "observation.images.image": (
+            torch.from_numpy(np.array(agentview_pil))
+            .permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
+        ),
+        "observation.images.image2": (
+            torch.from_numpy(np.array(wrist_pil))
+            .permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
+        ),
+        "observation.state": (
+            torch.from_numpy(state).unsqueeze(0).to(device)
+        ),
+        "task": task_language,
     }
 
     with torch.no_grad():
@@ -108,6 +148,10 @@ def run_episode(env, policy, task, task_suite, task_id, episode_idx,
     if episode_idx < len(init_states):
         env.set_init_state(init_states[episode_idx])
         obs = env.reset()
+
+    # Reset policy internal state at start of each episode
+    if policy is not None:
+        policy.reset()
 
     frames = []
     total_reward = 0.0

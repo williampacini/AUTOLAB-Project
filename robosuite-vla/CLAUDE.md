@@ -73,6 +73,10 @@ os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 - **F-string backslash in Colab**: Use string concatenation instead of `\` line continuation in f-strings
 - **SmolVLA 3-camera mismatch**: `--policy.path=lerobot/smolvla_base` expects 3 cameras but LIBERO has 2. Use `--policy.type=smolvla --policy.load_vlm_weights=true` instead (auto-infers features from dataset)
 - **SmolVLA batch size**: Official examples use batch_size=4 (not 64). SmolVLA is memory-heavy on A100
+- **SmolVLA image keys**: Must use `observation.images.image` and `observation.images.image2` (not `observation.image`). The `.images.` prefix is required.
+- **SmolVLA wrist camera**: Provide `robot0_eye_in_hand_image` as `observation.images.image2` during inference
+- **SmolVLA policy.reset()**: Must call `policy.reset()` at the start of each episode to clear internal action queue
+- **PyTorch 2.6+ torch.load**: LIBERO's `get_task_init_states()` uses `torch.load` which defaults to `weights_only=True` in PyTorch 2.6+. Monkey-patch with `weights_only=False` before importing LIBERO
 
 ### Action Space (Panda + OSC_POSE)
 7-dim: `[dx, dy, dz, dax, day, daz, gripper]`
