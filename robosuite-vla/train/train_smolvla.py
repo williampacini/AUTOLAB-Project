@@ -60,7 +60,7 @@ def check_gpu():
         import torch
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1e9
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
             print(f"GPU: {gpu_name} ({gpu_mem:.1f} GB)")
             return True
         else:
@@ -77,11 +77,11 @@ def train_with_lerobot_cli(config):
     data = config.get("data", {})
     logging_cfg = config.get("logging", {})
 
-    # Build the LeRobot training command
+    # Build the LeRobot training command (lerobot-train CLI, LeRobot v0.4+)
     cmd = [
-        sys.executable, "-m", "lerobot.scripts.train",
+        "lerobot-train",
         f"--policy.path={training['model']}",
-        f"--dataset.repo_id={data.get('hf_repo', 'yifengzhu-hf/libero_spatial_no_noops')}",
+        f"--dataset.repo_id={data.get('hf_repo', 'HuggingFaceVLA/libero')}",
         f"--batch_size={training['batch_size']}",
         f"--steps={training['total_steps']}",
         f"--output_dir={training.get('output_dir', 'outputs/checkpoints/smolvla')}",

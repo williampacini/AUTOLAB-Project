@@ -13,12 +13,14 @@ DATA_DIR = ROOT / "data"
 
 SUITES = ["libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"]
 
+# HuggingFaceVLA/libero is the public v3.0 format dataset compatible with LeRobot v0.4+
+# The yifengzhu-hf per-suite datasets are gated and use v2.0 format (incompatible).
 HF_DATASETS = {
-    "libero_spatial": "yifengzhu-hf/libero_spatial_no_noops",
-    "libero_object": "yifengzhu-hf/libero_object_no_noops",
-    "libero_goal": "yifengzhu-hf/libero_goal_no_noops",
-    "libero_10": "yifengzhu-hf/libero_10_no_noops",
-    "libero_90": "yifengzhu-hf/libero_90_no_noops",
+    "libero_spatial": "HuggingFaceVLA/libero",
+    "libero_object": "HuggingFaceVLA/libero",
+    "libero_goal": "HuggingFaceVLA/libero",
+    "libero_10": "HuggingFaceVLA/libero",
+    "libero_90": "HuggingFaceVLA/libero",
 }
 
 

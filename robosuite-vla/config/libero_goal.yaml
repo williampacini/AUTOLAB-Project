@@ -15,4 +15,4 @@ training:
   output_dir: "outputs/checkpoints/smolvla_goal"
 
 data:
-  hf_repo: "yifengzhu-hf/libero_goal_no_noops"
+  hf_repo: "HuggingFaceVLA/libero"  # Public v3.0 format dataset

@@ -66,6 +66,11 @@ os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 - **RoboSuite 1.5 `env.name`**: Does not exist — store manually
 - **numpy version**: Colab needs `numpy>=2.0,<2.1` (numba compat)
 - **macros_private**: Create empty file in robosuite package dir to silence warning
+- **PyTorch 2.7+ GPU memory**: Use `torch.cuda.get_device_properties(0).total_memory` (not `total_mem`)
+- **LeRobot v0.4+ CLI**: Use `lerobot-train` command (not `python -m lerobot.scripts.train`)
+- **LeRobot v0.4+ requires policy.repo_id**: Add `--policy.repo_id=username/model-name`
+- **Dataset format**: Use `HuggingFaceVLA/libero` (public, v3.0). The `yifengzhu-hf/*` datasets are gated and v2.0 (incompatible)
+- **F-string backslash in Colab**: Use string concatenation instead of `\` line continuation in f-strings
 
 ### Action Space (Panda + OSC_POSE)
 7-dim: `[dx, dy, dz, dax, day, daz, gripper]`
