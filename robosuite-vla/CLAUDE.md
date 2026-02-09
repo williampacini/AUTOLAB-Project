@@ -71,6 +71,8 @@ os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 - **LeRobot v0.4+ requires policy.repo_id**: Add `--policy.repo_id=username/model-name`
 - **Dataset format**: Use `HuggingFaceVLA/libero` (public, v3.0). The `yifengzhu-hf/*` datasets are gated and v2.0 (incompatible)
 - **F-string backslash in Colab**: Use string concatenation instead of `\` line continuation in f-strings
+- **SmolVLA 3-camera mismatch**: `--policy.path=lerobot/smolvla_base` expects 3 cameras but LIBERO has 2. Use `--policy.type=smolvla --policy.load_vlm_weights=true` instead (auto-infers features from dataset)
+- **SmolVLA batch size**: Official examples use batch_size=4 (not 64). SmolVLA is memory-heavy on A100
 
 ### Action Space (Panda + OSC_POSE)
 7-dim: `[dx, dy, dz, dax, day, daz, gripper]`

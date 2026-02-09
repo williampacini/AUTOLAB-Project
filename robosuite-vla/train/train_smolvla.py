@@ -78,9 +78,12 @@ def train_with_lerobot_cli(config):
     logging_cfg = config.get("logging", {})
 
     # Build the LeRobot training command (lerobot-train CLI, LeRobot v0.4+)
+    # Use --policy.type=smolvla to auto-infer camera features from dataset.
+    # Do NOT use --policy.path=lerobot/smolvla_base (expects 3 cameras, fails with LIBERO's 2).
     cmd = [
         "lerobot-train",
-        f"--policy.path={training['model']}",
+        "--policy.type=smolvla",
+        "--policy.load_vlm_weights=true",
         f"--dataset.repo_id={data.get('hf_repo', 'HuggingFaceVLA/libero')}",
         f"--batch_size={training['batch_size']}",
         f"--steps={training['total_steps']}",
