@@ -198,8 +198,8 @@ def main():
                         help="Max demos per HDF5 file")
     parser.add_argument("--no-flip", action="store_true",
                         help="Don't flip images (if already corrected)")
-    parser.add_argument("--vcodec", type=str, default="libx264",
-                        help="Video codec (libx264, libsvtav1)")
+    parser.add_argument("--vcodec", type=str, default="h264",
+                        help="Video codec (h264, hevc, libsvtav1)")
     args = parser.parse_args()
 
     hdf5_paths = [Path(p) for p in args.hdf5]
