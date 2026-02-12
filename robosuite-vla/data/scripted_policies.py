@@ -49,8 +49,8 @@ def scripted_lift_policy(obs, env):
     Obs keys: ``cube_pos``, ``robot0_eef_pos``.
     Based on ``colab_notebooks/robosuite_sim.ipynb`` cell-15.
 
-    Uses separate XY/Z checks so the EEF fully descends to cube height
-    before closing (robot0_eef_pos is at the gripper center, not fingertips).
+    Once XY-aligned, always commands gripper closed to avoid oscillation
+    between descend-open and close-lift phases.
     """
     ee = obs["robot0_eef_pos"]
     cube = obs["cube_pos"]
@@ -61,19 +61,20 @@ def scripted_lift_policy(obs, env):
     z_diff = ee[2] - cube[2]  # positive = EEF above cube
 
     if xy_dist > 0.02:
-        # Phase 1: Align XY from above
+        # Phase 1: Align XY from above, gripper open
         approach = cube.copy()
         approach[2] += 0.05
         action[:3] = reach_pos(ee, approach)
-        action[6] = -1.0  # gripper open
-    elif z_diff > 0.01:
-        # Phase 2: Descend to cube height (XY aligned, still above)
-        action[:3] = reach_pos(ee, cube)
-        action[6] = -1.0  # gripper open
+        action[6] = -1.0  # open
     else:
-        # Phase 3: Close gripper and lift
-        action[2] = 1.0
-        action[6] = 1.0
+        # XY aligned — always close gripper from here on
+        action[6] = 1.0  # close (fingers wrap cube during descent)
+        if z_diff > 0.01:
+            # Phase 2: Descend to cube height
+            action[:3] = reach_pos(ee, cube)
+        else:
+            # Phase 3: At cube height — lift
+            action[2] = 1.0
 
     return np.clip(action, -1, 1)
 
@@ -107,11 +108,11 @@ def scripted_stack_policy(obs, env):
             approach[2] += 0.05
             action[:3] = reach_pos(ee, approach)
             action[6] = -1.0  # open
-        elif z_diff > 0.01:
-            action[:3] = reach_pos(ee, cubeA)
-            action[6] = -1.0  # open
         else:
+            # XY aligned — close gripper, descend if needed
             action[6] = 1.0  # close
+            if z_diff > 0.01:
+                action[:3] = reach_pos(ee, cubeA)
     elif grasped and not (above_B_xy and ee[2] > cubeB[2] + 0.06):
         # Phase 2: lift and move above cubeB
         target = cubeB.copy()
@@ -193,11 +194,11 @@ def scripted_pickplace_policy(obs, env):
             approach[2] += 0.05
             action[:3] = reach_pos(ee, approach)
             action[6] = -1.0
-        elif z_diff > 0.01:
-            action[:3] = reach_pos(ee, obj_pos)
-            action[6] = -1.0
         else:
+            # XY aligned — close gripper, descend if needed
             action[6] = 1.0
+            if z_diff > 0.01:
+                action[:3] = reach_pos(ee, obj_pos)
     elif grasped and np.linalg.norm(ee[:2] - bin_pos[:2]) > 0.03:
         # Phase 2: lift and move above bin
         if ee[2] < obj_pos[2] + 0.10:
@@ -335,11 +336,11 @@ def scripted_nut_single_policy(obs, env):
             approach[2] = max(approach[2] + 0.05, ee[2])
             action[:3] = reach_pos(ee, approach)
             action[6] = -1.0
-        elif z_diff > 0.01:
-            action[:3] = reach_pos(ee, nut_pos)
-            action[6] = -1.0
         else:
+            # XY aligned — close gripper, descend if needed
             action[6] = 1.0
+            if z_diff > 0.01:
+                action[:3] = reach_pos(ee, nut_pos)
     elif grasped and not above_peg_xy:
         # Phase 2: lift and align above peg
         target = peg_pos.copy()
@@ -430,11 +431,11 @@ class NutAssemblyPolicy:
                 approach[2] = max(approach[2] + 0.05, ee[2])
                 action[:3] = reach_pos(ee, approach)
                 action[6] = -1.0
-            elif z_diff > 0.01:
-                action[:3] = reach_pos(ee, nut_pos)
-                action[6] = -1.0
             else:
+                # XY aligned — close gripper, descend if needed
                 action[6] = 1.0
+                if z_diff > 0.01:
+                    action[:3] = reach_pos(ee, nut_pos)
                 self._grasp_steps += 1
         elif grasped and not above_peg_xy:
             # Phase 2: lift and align
