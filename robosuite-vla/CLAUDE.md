@@ -1,10 +1,13 @@
-# SmolVLA × LIBERO — Vision-Language-Action Robotics Project
+# SmolVLA × LIBERO / NutAssembly — Vision-Language-Action Robotics Project
 
 ## Project Goal
 
 Train SmolVLA (450M params) on LIBERO human demonstrations and evaluate on both
 standard LIBERO (task success) **and** LIBERO-PRO (perturbation robustness) to test
 whether the model genuinely understands tasks vs. memorizing action sequences.
+
+Additionally, post-train SmolVLA on **RobotSuite NutAssembly** (full: round + square
+nuts on pegs) and evaluate with per-episode MP4 video output.
 
 ## Why This Matters
 
@@ -17,39 +20,48 @@ achieves meaningfully non-zero LIBERO-PRO scores demonstrates genuine progress.
 
 ```
 robosuite-vla/
-├── config/          # Hydra-style YAML configs per suite
-├── data/            # Download, inspect, convert LIBERO demos
+├── config/          # YAML configs (libero_spatial, nut_assembly, etc.)
+├── data/            # Download, inspect, convert, collect demos
+│   ├── collect_nut_assembly.py    # Scripted demo collection for NutAssembly
+│   ├── download_nut_assembly.py   # Download robomimic HDF5 from HuggingFace
+│   ├── build_nut_assembly_dataset.py  # Full data pipeline orchestrator
+│   └── convert_to_lerobot.py      # HDF5 → LeRobot format (LIBERO + robomimic)
 ├── train/           # Fine-tune SmolVLA via LeRobot
-├── eval/            # Standard LIBERO + LIBERO-PRO evaluation
+├── eval/            # LIBERO + LIBERO-PRO + NutAssembly evaluation
+│   └── eval_nut_assembly.py       # NutAssembly eval with MP4 video output
 ├── viz/             # Rollout recording, plots, attention maps
-├── notebooks/       # Colab notebooks for each phase
+├── notebooks/       # Colab notebooks (01-03: LIBERO, 04: NutAssembly)
 └── outputs/         # Checkpoints, videos, result CSVs
 ```
 
 ## Quick Commands
 
+### LIBERO Pipeline
 ```bash
-# Phase 1: Download LIBERO data
 python data/download_libero.py --suite libero_spatial
-
-# Inspect demos (generates GIF previews)
 python data/inspect_demos.py --suite libero_spatial --task 0 --demo 0
-
-# Convert to LeRobot format
 python data/convert_to_lerobot.py --suite libero_spatial --repo-id USER/libero_spatial
-
-# Phase 2: Train SmolVLA
 python train/train_smolvla.py --config config/libero_spatial.yaml
-
-# Phase 3: Evaluate standard LIBERO
 python eval/eval_libero.py --checkpoint outputs/checkpoints/smolvla_spatial --suite libero_spatial
-
-# Phase 3b: Evaluate LIBERO-PRO
 python eval/eval_libero_pro.py --checkpoint outputs/checkpoints/smolvla_spatial --suite libero_spatial
-
-# Phase 4: Compare models
 python eval/eval_compare.py --results-dir outputs/results/
-python eval/generate_report.py --results-dir outputs/results/
+```
+
+### NutAssembly Pipeline
+```bash
+# Full data pipeline: download HF + collect scripted + convert
+python data/build_nut_assembly_dataset.py
+
+# Or step by step:
+python data/download_nut_assembly.py --output-dir data/robomimic_nut_assembly
+python data/collect_nut_assembly.py --num-demos 50 --visualize
+python data/build_nut_assembly_dataset.py --skip-download --skip-collect
+
+# Train
+python train/train_smolvla.py --config config/nut_assembly.yaml
+
+# Evaluate with video output for every episode
+python eval/eval_nut_assembly.py --checkpoint outputs/checkpoints/smolvla_nut_assembly --episodes 20 --speedup 3
 ```
 
 ## Environment Setup — Critical Notes
@@ -99,8 +111,32 @@ Each demo contains:
 After training, change `n_action_steps` from 1 to 50 in model config.json
 before inference. Without this, inference is 50× slower.
 
+## NutAssembly-Specific Notes
+
+### Observation Keys
+- `SquareNut_pos` — (3,) world position of square nut
+- `RoundNut_pos` — (3,) world position of round nut
+- `SquareNut_to_robot0_eef_pos` — (3,) relative position
+- `RoundNut_to_robot0_eef_pos` — (3,) relative position
+- Peg positions: access via `env.sim.data.body_xpos[env.peg1_body_id]` (square target) and `env.peg2_body_id` (round target)
+- Nut handle positions: `env.sim.data.site_xpos[env.sim.model.site_name2id(nut.important_sites["handle"])]`
+
+### NutAssembly vs LIBERO
+- **Horizon**: NutAssembly uses 1000 steps (LIBERO uses 600)
+- **Success**: `env._check_success()` — both nuts on correct pegs (XY dist < 0.03)
+- **Environment**: Direct `robosuite.make()` (no BDDL files)
+- **Data**: 3/4 from robomimic HF (NutAssemblySquare + NutAssemblyRound), 1/4 scripted
+- **Cameras**: agentview + robot0_eye_in_hand, both at 256x256
+
+### Video Output
+- `eval/eval_nut_assembly.py` records MP4 for EVERY test episode
+- Speedup factor (default 3x): increases output FPS so 50s real-time plays in ~17s
+- Filenames: `scenario_{idx:03d}_{success|fail}.mp4`
+- HTML report generated at `outputs/results/nut_assembly_eval.html`
+
 ## Data Sources
-- **Primary**: LIBERO human teleoperation demos (50/task, SpaceMouse, 20Hz)
+- **LIBERO**: Human teleoperation demos (50/task, SpaceMouse, 20Hz)
+- **NutAssembly**: robomimic HF (`amandlek/robomimic`) + scripted policy demos
 - **Pretrained base**: SmolVLA pretrained on 10M frames from 487 LeRobot datasets
 - **NOT using**: Claude-generated demos (failed — cannot do spatial reasoning from images)
 
@@ -115,3 +151,4 @@ before inference. Without this, inference is 50× slower.
 - [ ] Phase 2: SmolVLA fine-tuning
 - [ ] Phase 3: Standard + PRO evaluation
 - [ ] Phase 4: Baseline comparison + report
+- [ ] NutAssembly: Post-train + evaluate with video

@@ -1,0 +1,66 @@
+# Configuration for SmolVLA × RobotSuite NutAssembly (full: round + square nuts)
+
+# --- Suite ---
+suite:
+  name: "nut_assembly"
+  n_tasks: 1
+  description: "RobotSuite NutAssembly — assemble round and square nuts onto pegs"
+  task_language: "Assemble the round nut and square nut onto their respective pegs"
+
+# --- Environment ---
+env:
+  mujoco_gl: "egl"              # GPU on Colab ("osmesa" for CPU headless)
+  camera_name: "agentview"
+  camera_height: 256
+  camera_width: 256
+  control_freq: 20
+  action_dim: 7
+  max_episode_steps: 1000       # NutAssembly horizon is longer than LIBERO's 600
+
+# --- Data ---
+data:
+  local_dir: "outputs/lerobot/nut_assembly"
+  image_size: 256
+  cameras:
+    - "agentview"
+    - "robot0_eye_in_hand"
+  scripted_demos: 50            # 1/4 of data — collected via scripted policy
+  hf_demos_per_variant: 75      # per variant (Square + Round) — 3/4 total
+
+# --- Training ---
+training:
+  model: "lerobot/smolvla_base"
+  batch_size: 4                 # SmolVLA is memory-heavy
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  total_steps: 50000
+  save_freq: 5000
+  eval_freq: 2500
+  gradient_accumulation: 1
+  mixed_precision: "bf16"
+  seed: 42
+  n_action_steps: 50
+  output_dir: "outputs/checkpoints/smolvla_nut_assembly"
+
+# --- Evaluation ---
+eval:
+  n_episodes: 20
+  max_steps: 1000
+  seeds: [42, 123, 456, 789, 1024]
+  record_video: true
+  video_speedup: 3              # 3x playback speed for output videos
+
+# --- Logging ---
+logging:
+  wandb_project: "smolvla-nut-assembly"
+  wandb_entity: null
+  log_freq: 100
+  save_gifs: false              # Use MP4 instead
+
+# --- Paths ---
+paths:
+  output_dir: "outputs"
+  checkpoint_dir: "outputs/checkpoints"
+  video_dir: "outputs/videos/nut_assembly"
+  results_dir: "outputs/results"

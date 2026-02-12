@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Convert LIBERO HDF5 demonstrations to LeRobot dataset format.
+"""Convert LIBERO or robomimic HDF5 demonstrations to LeRobot dataset format.
 
 LeRobot datasets use:
   - Parquet files for state/action data
   - MP4 videos for camera observations
   - HuggingFace dataset metadata
 
-This script converts LIBERO's HDF5 format and optionally uploads to HuggingFace Hub.
+Supports:
+  - LIBERO HDF5 format (agentview_image, robot0_eye_in_hand_image)
+  - robomimic HDF5 format (NutAssembly, Lift, etc.)
+  - Dual cameras (agentview + wrist)
+
+This script converts HDF5 to local LeRobot format and optionally uploads to HuggingFace Hub.
 """
 
 import argparse
@@ -39,14 +44,50 @@ def get_task_language(hdf5_path):
     return name.replace("_", " ")
 
 
-def convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=256, task_language=None):
-    """Convert a single LIBERO HDF5 file to LeRobot-compatible format.
+def _process_camera_frames(raw_frames, image_size, flip=True):
+    """Process camera frames: flip and resize.
 
-    Returns list of episode dicts with keys:
-      - episode_index, task, observations, actions, etc.
+    Args:
+        raw_frames: (T, H, W, 3) uint8 array
+        image_size: target square resolution
+        flip: whether to flip vertically (MuJoCo renders upside-down)
+
+    Returns:
+        (T, image_size, image_size, 3) uint8 array
     """
     from PIL import Image as PILImage
 
+    processed = []
+    for frame in raw_frames:
+        if flip:
+            frame = np.flip(frame, axis=0).copy()
+        if frame.shape[0] != image_size or frame.shape[1] != image_size:
+            pil_img = PILImage.fromarray(frame).resize(
+                (image_size, image_size), PILImage.LANCZOS
+            )
+            frame = np.array(pil_img)
+        processed.append(frame)
+    return np.stack(processed)
+
+
+def convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=256, task_language=None,
+                             max_demos=None, include_wrist=True, flip_images=True):
+    """Convert a single HDF5 file (LIBERO or robomimic) to LeRobot-compatible format.
+
+    Supports both LIBERO and robomimic HDF5 layouts.
+
+    Args:
+        hdf5_path: path to HDF5 file
+        output_dir: output directory
+        image_size: target image resolution (square)
+        task_language: override task description (uses HDF5 attrs if None)
+        max_demos: limit number of demos to convert (None = all)
+        include_wrist: include wrist camera (robot0_eye_in_hand_image) as image2
+        flip_images: flip images vertically (MuJoCo upside-down fix)
+
+    Returns list of episode dicts with keys:
+      - task, n_steps, actions, states, images, images2 (optional)
+    """
     task_language = task_language or get_task_language(hdf5_path)
     episodes = []
 
@@ -56,6 +97,9 @@ def convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=256, task_language
             return []
 
         demo_keys = sorted(f["data"].keys())
+        if max_demos is not None:
+            demo_keys = demo_keys[:max_demos]
+
         print(f"  Task: {task_language}")
         print(f"  Demos: {len(demo_keys)}")
 
@@ -64,12 +108,20 @@ def convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=256, task_language
             actions = demo["actions"][:]
             n_steps = len(actions)
 
-            # Extract camera images
+            # Extract main camera images (agentview)
             images = None
             for cam_key in ["agentview_image", "agentview_rgb"]:
                 if cam_key in demo["obs"]:
                     images = demo["obs"][cam_key][:]
                     break
+
+            # Extract wrist camera images
+            images2 = None
+            if include_wrist:
+                for cam_key in ["robot0_eye_in_hand_image", "robot0_eye_in_hand_rgb"]:
+                    if cam_key in demo["obs"]:
+                        images2 = demo["obs"][cam_key][:]
+                        break
 
             # Extract state observations
             state_keys = {}
@@ -85,20 +137,17 @@ def convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=256, task_language
                 "states": state_keys,
             }
 
-            # Process and save images
+            # Process agentview images
             if images is not None:
-                processed_frames = []
-                for frame in images:
-                    # Flip (MuJoCo renders upside-down)
-                    frame = np.flip(frame, axis=0).copy()
-                    # Resize if needed
-                    if frame.shape[0] != image_size or frame.shape[1] != image_size:
-                        pil_img = PILImage.fromarray(frame).resize(
-                            (image_size, image_size), PILImage.LANCZOS
-                        )
-                        frame = np.array(pil_img)
-                    processed_frames.append(frame)
-                episode_data["images"] = np.stack(processed_frames)
+                episode_data["images"] = _process_camera_frames(
+                    images, image_size, flip=flip_images
+                )
+
+            # Process wrist camera images
+            if images2 is not None:
+                episode_data["images2"] = _process_camera_frames(
+                    images2, image_size, flip=flip_images
+                )
 
             episodes.append(episode_data)
 
@@ -106,13 +155,20 @@ def convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=256, task_language
 
 
 def save_lerobot_format(episodes, output_dir, task_name):
-    """Save episodes in LeRobot-compatible format."""
+    """Save episodes in LeRobot-compatible format.
+
+    Handles dual cameras: agentview → observation.images.image,
+    wrist → observation.images.image2.
+    """
     import pandas as pd
 
     output_dir = Path(output_dir)
     (output_dir / "data").mkdir(parents=True, exist_ok=True)
-    (output_dir / "videos").mkdir(parents=True, exist_ok=True)
+    (output_dir / "videos" / "observation.images.image").mkdir(parents=True, exist_ok=True)
+    (output_dir / "videos" / "observation.images.image2").mkdir(parents=True, exist_ok=True)
     (output_dir / "meta").mkdir(parents=True, exist_ok=True)
+
+    has_wrist = any("images2" in ep for ep in episodes)
 
     all_rows = []
     episode_lengths = []
@@ -129,23 +185,40 @@ def save_lerobot_format(episodes, output_dir, task_name):
                 "task": ep["task"],
             }
 
-            # Actions
+            # Actions (7D)
             for i, name in enumerate(["dx", "dy", "dz", "dax", "day", "daz", "gripper"]):
                 row[f"action_{name}"] = float(ep["actions"][t, i])
 
-            # States
+            # State: eef_pos (3) + eef_quat (4) = 7D observation.state
+            eef_pos = ep.get("states", {}).get("robot0_eef_pos")
+            eef_quat = ep.get("states", {}).get("robot0_eef_quat")
+            if eef_pos is not None and eef_quat is not None and t < len(eef_pos):
+                state = np.concatenate([eef_pos[t], eef_quat[t]])
+                for i, v in enumerate(state):
+                    row[f"observation.state_{i}"] = float(v)
+
+            # Extra states (gripper, joints)
             for key, values in ep.get("states", {}).items():
+                if key in ("robot0_eef_pos", "robot0_eef_quat"):
+                    continue  # Already in observation.state
                 if t < len(values):
                     for i, v in enumerate(values[t]):
                         row[f"{key}_{i}"] = float(v)
 
             all_rows.append(row)
 
-        # Save video if images available
+        # Save agentview video
         if "images" in ep:
             _save_episode_video(
                 ep["images"],
-                output_dir / "videos" / f"episode_{ep_idx:04d}.mp4",
+                output_dir / "videos" / "observation.images.image" / f"episode_{ep_idx:04d}.mp4",
+            )
+
+        # Save wrist camera video
+        if "images2" in ep:
+            _save_episode_video(
+                ep["images2"],
+                output_dir / "videos" / "observation.images.image2" / f"episode_{ep_idx:04d}.mp4",
             )
 
     # Save as parquet
@@ -153,6 +226,11 @@ def save_lerobot_format(episodes, output_dir, task_name):
     parquet_path = output_dir / "data" / f"{task_name}.parquet"
     df.to_parquet(parquet_path, index=False)
     print(f"  Saved {len(df)} rows to {parquet_path}")
+
+    # Determine image size
+    img_size = 128
+    if episodes and "images" in episodes[0]:
+        img_size = episodes[0]["images"].shape[1]
 
     # Save metadata
     meta = {
@@ -163,8 +241,9 @@ def save_lerobot_format(episodes, output_dir, task_name):
         "fps": 20,
         "action_dim": 7,
         "action_names": ["dx", "dy", "dz", "dax", "day", "daz", "gripper"],
-        "image_size": episodes[0].get("images", np.zeros((1, 128, 128, 3))).shape[1]
-        if episodes else 128,
+        "image_size": img_size,
+        "cameras": ["observation.images.image"] + (["observation.images.image2"] if has_wrist else []),
+        "state_dim": 7,  # eef_pos (3) + eef_quat (4)
     }
     with open(output_dir / "meta" / "info.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -203,42 +282,114 @@ def upload_to_hub(output_dir, repo_id):
     print(f"Uploaded: https://huggingface.co/datasets/{repo_id}")
 
 
+def convert_multiple_hdf5(hdf5_paths, output_dir, task_name, image_size=256,
+                          task_language=None, max_demos_per_file=None,
+                          include_wrist=True, flip_images=True):
+    """Convert multiple HDF5 files into a single LeRobot dataset.
+
+    Useful for combining NutAssemblySquare + NutAssemblyRound + scripted demos.
+
+    Args:
+        hdf5_paths: list of HDF5 file paths
+        output_dir: output directory for the combined dataset
+        task_name: name for the output dataset
+        image_size: target image resolution
+        task_language: override task description for all episodes
+        max_demos_per_file: limit demos per HDF5 file
+        include_wrist: include wrist camera
+        flip_images: flip images vertically
+
+    Returns:
+        DataFrame of the combined dataset
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    all_episodes = []
+    for hdf5_path in hdf5_paths:
+        print(f"\nProcessing: {hdf5_path}")
+        episodes = convert_hdf5_to_lerobot(
+            hdf5_path, output_dir,
+            image_size=image_size,
+            task_language=task_language,
+            max_demos=max_demos_per_file,
+            include_wrist=include_wrist,
+            flip_images=flip_images,
+        )
+        all_episodes.extend(episodes)
+
+    if all_episodes:
+        print(f"\nTotal episodes: {len(all_episodes)}")
+        return save_lerobot_format(all_episodes, output_dir, task_name)
+    else:
+        print("No episodes to save!")
+        return None
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Convert LIBERO HDF5 to LeRobot format")
-    parser.add_argument("--suite", type=str, default="libero_spatial", help="LIBERO suite name")
+    parser = argparse.ArgumentParser(description="Convert HDF5 demos to LeRobot format")
+    parser.add_argument("--suite", type=str, default=None, help="LIBERO suite name")
+    parser.add_argument("--hdf5", type=str, nargs="+", default=None,
+                        help="Direct HDF5 file paths (for robomimic / NutAssembly)")
+    parser.add_argument("--task-name", type=str, default=None,
+                        help="Dataset name (defaults to suite name)")
+    parser.add_argument("--task-language", type=str, default=None,
+                        help="Override task description for all episodes")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory")
     parser.add_argument("--image-size", type=int, default=256, help="Output image size")
+    parser.add_argument("--max-demos", type=int, default=None,
+                        help="Max demos per HDF5 file")
+    parser.add_argument("--include-wrist", action="store_true", default=True,
+                        help="Include wrist camera as image2")
+    parser.add_argument("--no-flip", action="store_true",
+                        help="Don't flip images (if already corrected)")
     parser.add_argument("--repo-id", type=str, default=None, help="HuggingFace repo ID for upload")
     parser.add_argument("--upload", action="store_true", help="Upload to HuggingFace Hub")
     args = parser.parse_args()
 
-    suite_dir = DATA_DIR / args.suite
-    if not suite_dir.exists():
-        print(f"Suite not found: {suite_dir}")
-        print(f"Run: python data/download_libero.py --suite {args.suite}")
+    # Determine input sources
+    if args.hdf5:
+        # Direct HDF5 file paths (robomimic / NutAssembly mode)
+        hdf5_files = [Path(p) for p in args.hdf5]
+        for p in hdf5_files:
+            if not p.exists():
+                print(f"File not found: {p}")
+                return
+        task_name = args.task_name or "nut_assembly"
+    elif args.suite:
+        # LIBERO suite mode (original behavior)
+        suite_dir = DATA_DIR / args.suite
+        if not suite_dir.exists():
+            print(f"Suite not found: {suite_dir}")
+            print(f"Run: python data/download_libero.py --suite {args.suite}")
+            return
+        hdf5_files = sorted(suite_dir.rglob("*.hdf5"))
+        task_name = args.task_name or args.suite
+    else:
+        print("Specify --suite for LIBERO or --hdf5 for direct HDF5 files")
         return
 
-    output_dir = Path(args.output_dir) if args.output_dir else ROOT / "outputs" / "lerobot" / args.suite
+    if not hdf5_files:
+        print("No HDF5 files found!")
+        return
+
+    output_dir = Path(args.output_dir) if args.output_dir else ROOT / "outputs" / "lerobot" / task_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print(f"  Converting {args.suite} to LeRobot format")
+    print(f"  Converting to LeRobot format: {task_name}")
+    print(f"  Input files: {len(hdf5_files)}")
+    print(f"  Output dir:  {output_dir}")
     print("=" * 60)
 
-    # Find HDF5 files
-    hdf5_files = sorted(suite_dir.rglob("*.hdf5"))
-    if not hdf5_files:
-        print(f"No HDF5 files found in {suite_dir}")
-        print("Data may already be in LeRobot format — check for .parquet files")
-        return
-
-    all_episodes = []
-    for hdf5_path in hdf5_files:
-        episodes = convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=args.image_size)
-        all_episodes.extend(episodes)
-
-    if all_episodes:
-        save_lerobot_format(all_episodes, output_dir, args.suite)
+    convert_multiple_hdf5(
+        hdf5_files, output_dir, task_name,
+        image_size=args.image_size,
+        task_language=args.task_language,
+        max_demos_per_file=args.max_demos,
+        include_wrist=args.include_wrist,
+        flip_images=not args.no_flip,
+    )
 
     if args.upload and args.repo_id:
         upload_to_hub(output_dir, args.repo_id)
