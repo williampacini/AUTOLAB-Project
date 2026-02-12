@@ -118,9 +118,10 @@ def train_with_lerobot_cli(config):
     # GPU device
     cmd.append("--policy.device=cuda")
 
-    # Mixed precision
+    # Mixed precision — use top-level --use_amp flag, NOT --policy.dtype
+    # (SmolVLAConfig does not have a `dtype` field; passing --policy.dtype crashes)
     if training.get("mixed_precision"):
-        cmd.append(f"--policy.dtype={training['mixed_precision']}")
+        cmd.append("--use_amp=true")
 
     # Wandb logging
     if logging_cfg.get("wandb_project"):
@@ -133,7 +134,7 @@ def train_with_lerobot_cli(config):
     print("  SmolVLA Training")
     print("=" * 60)
     print(f"  Model: {training['model']}")
-    print(f"  Dataset: {data.get('hf_repo', 'N/A')}")
+    print(f"  Dataset: {data.get('hf_repo') or data.get('local_dir') or 'N/A'}")
     print(f"  Steps: {training['total_steps']}")
     print(f"  Batch size: {training['batch_size']}")
     print(f"  Output: {training.get('output_dir', 'outputs/checkpoints/smolvla')}")
