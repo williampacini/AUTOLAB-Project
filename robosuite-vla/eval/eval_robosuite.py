@@ -3,10 +3,14 @@
 
 Standard evaluation: 6 tasks x N episodes per task.
 Reports per-task and overall success rates.
+Saves MP4 video of every evaluation episode for verification.
 
 Usage:
-    # Evaluate all tasks
-    python eval/eval_robosuite.py --checkpoint outputs/checkpoints/smolvla_robosuite --all
+    # Evaluate all tasks, record every episode
+    python eval/eval_robosuite.py --checkpoint outputs/checkpoints/smolvla_robosuite --all --record-all
+
+    # Nut assembly only, record everything
+    python eval/eval_robosuite.py --checkpoint outputs/checkpoints/smolvla_robosuite --nut-assembly --record-all
 
     # Single task
     python eval/eval_robosuite.py --checkpoint outputs/checkpoints/smolvla_robosuite --env Lift --episodes 50
@@ -59,6 +63,8 @@ ENV_CONFIGS = {
         "task_description": "pick up each nut and place it on the correct peg",
     },
 }
+
+NUT_ASSEMBLY_ENVS = ["NutAssemblySingle", "NutAssembly"]
 
 
 def make_env(env_name, camera_res=128):
@@ -164,10 +170,13 @@ def run_episode(env, policy, env_name, episode_idx, max_steps=400,
                 device="cuda", record=False):
     """Run a single evaluation episode.
 
+    Args:
+        record: If True, captures EVERY frame for video saving.
+
     Returns:
         success: bool
         total_reward: float
-        frames: list of frames (if record=True)
+        frames: list of RGB frames (if record=True), every frame captured
     """
     # Use different seeds from training (offset by 10000)
     seed = 10000 + episode_idx
@@ -184,14 +193,15 @@ def run_episode(env, policy, env_name, episode_idx, max_steps=400,
     total_reward = 0.0
 
     for step in range(max_steps):
-        action = get_action(policy, obs, task_language, device=device)
-        obs, reward, done, info = env.step(action)
-        total_reward += reward
-
-        if record and step % 3 == 0:
+        # Capture frame BEFORE action (shows what policy sees)
+        if record:
             cam_img = obs.get("agentview_image")
             if cam_img is not None:
                 frames.append(np.flip(cam_img, axis=0).copy())
+
+        action = get_action(policy, obs, task_language, device=device)
+        obs, reward, done, info = env.step(action)
+        total_reward += reward
 
         # Check success
         try:
@@ -200,6 +210,11 @@ def run_episode(env, policy, env_name, episode_idx, max_steps=400,
             task_success = bool(reward > 0.5)
 
         if task_success:
+            # Capture final success frame
+            if record:
+                cam_img = obs.get("agentview_image")
+                if cam_img is not None:
+                    frames.append(np.flip(cam_img, axis=0).copy())
             return True, total_reward, frames
 
         if done:
@@ -208,9 +223,45 @@ def run_episode(env, policy, env_name, episode_idx, max_steps=400,
     return False, total_reward, frames
 
 
+def _save_video(frames, path, fps=20):
+    """Save frames as MP4 video."""
+    import imageio
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = imageio.get_writer(str(path), fps=fps)
+    for frame in frames:
+        writer.append_data(frame)
+    writer.close()
+
+
+def _save_gif(frames, path):
+    """Save episode frames as GIF (smaller, for quick preview)."""
+    from PIL import Image as PILImage
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Subsample to keep GIF size reasonable
+    step = max(1, len(frames) // 60)
+    sampled = frames[::step]
+
+    pil_frames = [PILImage.fromarray(f).resize((256, 256)) for f in sampled]
+    if pil_frames:
+        pil_frames[0].save(
+            path, save_all=True, append_images=pil_frames[1:],
+            duration=50, loop=0, optimize=True,
+        )
+
+
 def evaluate_env(checkpoint_path, env_name, n_episodes=50, max_steps=None,
-                 device="cuda", record_freq=10, output_dir=None):
+                 device="cuda", record_all=False, record_freq=10,
+                 output_dir=None):
     """Evaluate on a single robosuite environment.
+
+    Args:
+        record_all: If True, save MP4 video for EVERY episode.
+        record_freq: If record_all is False, save GIF every N episodes.
 
     Returns:
         dict with task results
@@ -219,15 +270,21 @@ def evaluate_env(checkpoint_path, env_name, n_episodes=50, max_steps=None,
     policy = load_policy(checkpoint_path, device=device)
     env = make_env(env_name)
 
+    video_dir = Path(output_dir or "outputs") / "videos" / "robosuite" / env_name
+    video_dir.mkdir(parents=True, exist_ok=True)
+
     successes = 0
     rewards = []
+    video_paths = []
 
     pbar = tqdm(range(n_episodes), desc=f"  {env_name}")
     for ep in pbar:
-        record = (ep % record_freq == 0) if record_freq > 0 else False
+        # Record this episode?
+        should_record = record_all or (record_freq > 0 and ep % record_freq == 0)
+
         success, reward, frames = run_episode(
             env, policy, env_name, ep,
-            max_steps=max_steps, device=device, record=record,
+            max_steps=max_steps, device=device, record=should_record,
         )
 
         if success:
@@ -235,13 +292,26 @@ def evaluate_env(checkpoint_path, env_name, n_episodes=50, max_steps=None,
         rewards.append(reward)
         pbar.set_postfix(sr=f"{successes}/{ep + 1}")
 
-        if record and frames and output_dir:
-            _save_gif(frames, output_dir, env_name, ep, success)
+        # Save video/gif
+        if should_record and frames and output_dir:
+            tag = "success" if success else "fail"
+            if record_all:
+                # Full MP4 for every episode
+                mp4_path = video_dir / f"ep{ep:03d}_{tag}.mp4"
+                _save_video(frames, mp4_path, fps=20)
+                video_paths.append(str(mp4_path))
+            else:
+                # Sampled GIF
+                gif_path = video_dir / f"ep{ep:03d}_{tag}.gif"
+                _save_gif(frames, gif_path)
+                video_paths.append(str(gif_path))
 
     env.close()
 
     sr = successes / n_episodes
     print(f"  {env_name}: {sr:.1%} ({successes}/{n_episodes})")
+    if video_paths:
+        print(f"    Videos saved: {video_dir}/ ({len(video_paths)} files)")
 
     return {
         "env_name": env_name,
@@ -250,29 +320,37 @@ def evaluate_env(checkpoint_path, env_name, n_episodes=50, max_steps=None,
         "n_episodes": n_episodes,
         "success_rate": sr,
         "mean_reward": float(np.mean(rewards)),
+        "video_dir": str(video_dir),
+        "n_videos": len(video_paths),
     }
 
 
-def evaluate_all(checkpoint_path, n_episodes=50, device="cuda",
-                 record_freq=10, output_dir=None):
-    """Evaluate on all robosuite environments."""
+def evaluate_all(checkpoint_path, env_names=None, n_episodes=50, device="cuda",
+                 record_all=False, record_freq=10, output_dir=None):
+    """Evaluate on multiple robosuite environments."""
+    env_names = env_names or list(ENV_CONFIGS.keys())
+
     print(f"\n{'='*60}")
-    print(f"  Evaluating on {len(ENV_CONFIGS)} robosuite tasks x {n_episodes} episodes")
+    print(f"  Evaluating on {len(env_names)} robosuite tasks x {n_episodes} episodes")
+    if record_all:
+        print(f"  Recording MP4 video for EVERY episode")
     print(f"{'='*60}")
 
     results = {
         "checkpoint": str(checkpoint_path),
         "n_episodes": n_episodes,
+        "record_all": record_all,
         "tasks": [],
     }
 
     total_successes = 0
     total_trials = 0
 
-    for env_name in ENV_CONFIGS:
+    for env_name in env_names:
         task_result = evaluate_env(
             checkpoint_path, env_name, n_episodes=n_episodes,
-            device=device, record_freq=record_freq, output_dir=output_dir,
+            device=device, record_all=record_all, record_freq=record_freq,
+            output_dir=output_dir,
         )
         results["tasks"].append(task_result)
         total_successes += task_result["successes"]
@@ -286,24 +364,6 @@ def evaluate_all(checkpoint_path, n_episodes=50, device="cuda",
           f"({total_successes}/{total_trials})")
 
     return results
-
-
-def _save_gif(frames, output_dir, env_name, ep, success):
-    """Save episode frames as GIF."""
-    from PIL import Image as PILImage
-
-    out = Path(output_dir) / "videos" / "robosuite"
-    out.mkdir(parents=True, exist_ok=True)
-
-    tag = "success" if success else "fail"
-    gif_path = out / f"{env_name}_ep{ep}_{tag}.gif"
-
-    pil_frames = [PILImage.fromarray(f).resize((256, 256)) for f in frames]
-    if pil_frames:
-        pil_frames[0].save(
-            gif_path, save_all=True, append_images=pil_frames[1:],
-            duration=50, loop=0, optimize=True,
-        )
 
 
 def save_results(results, output_dir):
@@ -321,17 +381,19 @@ def save_results(results, output_dir):
     csv_path = out / "robosuite_eval.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["env_name", "task_description", "successes", "episodes", "success_rate"])
+        writer.writerow(["env_name", "task_description", "successes",
+                         "episodes", "success_rate", "mean_reward"])
         for t in results["tasks"]:
             writer.writerow([
                 t["env_name"], t["task_description"],
                 t["successes"], t["n_episodes"],
                 f"{t['success_rate']:.4f}",
+                f"{t['mean_reward']:.4f}",
             ])
         writer.writerow([
             "OVERALL", "", results["total_successes"],
             results["total_trials"],
-            f"{results['overall_success_rate']:.4f}",
+            f"{results['overall_success_rate']:.4f}", "",
         ])
     print(f"CSV saved: {csv_path}")
 
@@ -340,52 +402,84 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate SmolVLA on robosuite tasks")
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to model checkpoint")
-    parser.add_argument("--env", type=str, default=None,
-                        choices=list(ENV_CONFIGS.keys()),
-                        help="Single environment to evaluate")
-    parser.add_argument("--all", action="store_true",
-                        help="Evaluate all environments")
+
+    # Task selection (mutually exclusive group)
+    task_group = parser.add_mutually_exclusive_group()
+    task_group.add_argument("--env", type=str, default=None,
+                            choices=list(ENV_CONFIGS.keys()),
+                            help="Single environment to evaluate")
+    task_group.add_argument("--all", action="store_true",
+                            help="Evaluate all environments")
+    task_group.add_argument("--nut-assembly", action="store_true",
+                            help="Evaluate NutAssemblySingle + NutAssembly only")
+
     parser.add_argument("--episodes", type=int, default=50,
                         help="Episodes per task (default: 50)")
     parser.add_argument("--max-steps", type=int, default=None,
                         help="Max steps per episode (overrides env default)")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--output-dir", type=str, default="outputs")
+    parser.add_argument("--record-all", action="store_true",
+                        help="Record MP4 video of EVERY episode for verification")
     parser.add_argument("--record-freq", type=int, default=10,
-                        help="Record GIF every N episodes (0=off)")
+                        help="Record GIF every N episodes when --record-all is off (0=off)")
     args = parser.parse_args()
 
-    if not args.all and not args.env:
-        parser.error("Specify --env ENV_NAME or --all")
+    if not args.all and not args.env and not args.nut_assembly:
+        parser.error("Specify --env ENV_NAME, --all, or --nut-assembly")
 
-    if args.all:
-        results = evaluate_all(
-            checkpoint_path=args.checkpoint,
-            n_episodes=args.episodes,
-            device=args.device,
-            record_freq=args.record_freq,
-            output_dir=args.output_dir,
-        )
+    # Determine which envs to evaluate
+    if args.env:
+        env_names = [args.env]
+    elif args.nut_assembly:
+        env_names = NUT_ASSEMBLY_ENVS
     else:
+        env_names = list(ENV_CONFIGS.keys())
+
+    if len(env_names) == 1:
         task_result = evaluate_env(
             checkpoint_path=args.checkpoint,
-            env_name=args.env,
+            env_name=env_names[0],
             n_episodes=args.episodes,
             max_steps=args.max_steps,
             device=args.device,
+            record_all=args.record_all,
             record_freq=args.record_freq,
             output_dir=args.output_dir,
         )
         results = {
             "checkpoint": args.checkpoint,
             "n_episodes": args.episodes,
+            "record_all": args.record_all,
             "tasks": [task_result],
             "overall_success_rate": task_result["success_rate"],
             "total_successes": task_result["successes"],
             "total_trials": args.episodes,
         }
+    else:
+        results = evaluate_all(
+            checkpoint_path=args.checkpoint,
+            env_names=env_names,
+            n_episodes=args.episodes,
+            device=args.device,
+            record_all=args.record_all,
+            record_freq=args.record_freq,
+            output_dir=args.output_dir,
+        )
 
     save_results(results, args.output_dir)
+
+    # Print summary
+    print(f"\n{'='*60}")
+    print(f"  EVALUATION COMPLETE")
+    print(f"{'='*60}")
+    for t in results["tasks"]:
+        print(f"  {t['env_name']:20s}  {t['success_rate']:.1%}  "
+              f"({t['successes']}/{t['n_episodes']})")
+    print(f"  {'OVERALL':20s}  {results['overall_success_rate']:.1%}  "
+          f"({results['total_successes']}/{results['total_trials']})")
+    if args.record_all:
+        print(f"\n  Videos: {args.output_dir}/videos/robosuite/<env>/")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Fine-tune SmolVLA on LIBERO demonstration data via LeRobot.
+"""Fine-tune SmolVLA on LIBERO or robosuite demonstration data via LeRobot.
 
 Usage:
+    # LIBERO (HuggingFace dataset)
     python train/train_smolvla.py --config config/libero_spatial.yaml
     python train/train_smolvla.py --suite libero_spatial --steps 20000
+
+    # Robosuite (local dataset after convert_to_lerobot.py)
+    python train/train_smolvla.py --config config/robosuite_multitask.yaml
 """
 
 import argparse
@@ -84,7 +88,6 @@ def train_with_lerobot_cli(config):
         "lerobot-train",
         "--policy.type=smolvla",
         "--policy.load_vlm_weights=true",
-        f"--dataset.repo_id={data.get('hf_repo', 'HuggingFaceVLA/libero')}",
         f"--batch_size={training['batch_size']}",
         f"--steps={training['total_steps']}",
         f"--output_dir={training.get('output_dir', 'outputs/checkpoints/smolvla')}",
@@ -93,6 +96,24 @@ def train_with_lerobot_cli(config):
         f"--log_freq={logging_cfg.get('log_freq', 100)}",
         f"--seed={training['seed']}",
     ]
+
+    # Dataset source: HuggingFace Hub repo OR local directory
+    hf_repo = data.get("hf_repo")
+    local_dir = data.get("local_dir")
+
+    if hf_repo:
+        cmd.append(f"--dataset.repo_id={hf_repo}")
+    elif local_dir:
+        # Local dataset (e.g., robosuite demos converted to LeRobot format)
+        local_path = Path(local_dir)
+        if not local_path.is_absolute():
+            local_path = ROOT / local_path
+        cmd.append(f"--dataset.root={local_path}")
+        # When using local root, repo_id is used as the dataset name
+        cmd.append("--dataset.repo_id=robosuite_multitask")
+    else:
+        # Fallback
+        cmd.append("--dataset.repo_id=HuggingFaceVLA/libero")
 
     # GPU device
     cmd.append("--policy.device=cuda")
@@ -170,7 +191,7 @@ def fix_n_action_steps(checkpoint_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune SmolVLA on LIBERO")
+    parser = argparse.ArgumentParser(description="Fine-tune SmolVLA on LIBERO or robosuite")
     parser.add_argument("--config", type=str, default=None, help="Path to config YAML")
     parser.add_argument("--suite", type=str, default=None, help="LIBERO suite name (loads config/<suite>.yaml)")
     parser.add_argument("--steps", type=int, default=None, help="Override total training steps")
