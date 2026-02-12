@@ -48,23 +48,30 @@ def scripted_lift_policy(obs, env):
 
     Obs keys: ``cube_pos``, ``robot0_eef_pos``.
     Based on ``colab_notebooks/robosuite_sim.ipynb`` cell-15.
+
+    Uses separate XY/Z checks so the EEF fully descends to cube height
+    before closing (robot0_eef_pos is at the gripper center, not fingertips).
     """
     ee = obs["robot0_eef_pos"]
     cube = obs["cube_pos"]
-    delta = cube - ee
-    dist = np.linalg.norm(delta)
 
     action = np.zeros(7)
 
-    if dist > 0.02:
-        # Approach from above first, then descend
+    xy_dist = np.linalg.norm(ee[:2] - cube[:2])
+    z_diff = ee[2] - cube[2]  # positive = EEF above cube
+
+    if xy_dist > 0.02:
+        # Phase 1: Align XY from above
         approach = cube.copy()
-        if np.linalg.norm(delta[:2]) > 0.02:
-            approach[2] += 0.05  # stay above until XY-aligned
+        approach[2] += 0.05
         action[:3] = reach_pos(ee, approach)
         action[6] = -1.0  # gripper open
+    elif z_diff > 0.01:
+        # Phase 2: Descend to cube height (XY aligned, still above)
+        action[:3] = reach_pos(ee, cube)
+        action[6] = -1.0  # gripper open
     else:
-        # Close gripper and lift
+        # Phase 3: Close gripper and lift
         action[2] = 1.0
         action[6] = 1.0
 
@@ -93,12 +100,15 @@ def scripted_stack_policy(obs, env):
 
     if not grasped and not cubeA_above_B:
         # Phase 1: reach and grasp cubeA
-        dist = np.linalg.norm(ee - cubeA)
-        if dist > 0.02:
+        xy_dist = np.linalg.norm(ee[:2] - cubeA[:2])
+        z_diff = ee[2] - cubeA[2]
+        if xy_dist > 0.02:
             approach = cubeA.copy()
-            if np.linalg.norm(ee[:2] - cubeA[:2]) > 0.02:
-                approach[2] += 0.05
+            approach[2] += 0.05
             action[:3] = reach_pos(ee, approach)
+            action[6] = -1.0  # open
+        elif z_diff > 0.01:
+            action[:3] = reach_pos(ee, cubeA)
             action[6] = -1.0  # open
         else:
             action[6] = 1.0  # close
@@ -176,12 +186,15 @@ def scripted_pickplace_policy(obs, env):
 
     if not grasped and not obj_lifted:
         # Phase 1: reach and grasp
-        dist = np.linalg.norm(ee - obj_pos)
-        if dist > 0.02:
+        xy_dist = np.linalg.norm(ee[:2] - obj_pos[:2])
+        z_diff = ee[2] - obj_pos[2]
+        if xy_dist > 0.02:
             approach = obj_pos.copy()
-            if np.linalg.norm(ee[:2] - obj_pos[:2]) > 0.02:
-                approach[2] += 0.05
+            approach[2] += 0.05
             action[:3] = reach_pos(ee, approach)
+            action[6] = -1.0
+        elif z_diff > 0.01:
+            action[:3] = reach_pos(ee, obj_pos)
             action[6] = -1.0
         else:
             action[6] = 1.0
@@ -315,12 +328,15 @@ def scripted_nut_single_policy(obs, env):
 
     if not grasped and not nut_lifted:
         # Phase 1: reach and grasp nut
-        dist = np.linalg.norm(ee - nut_pos)
-        if dist > 0.02:
+        xy_dist = np.linalg.norm(ee[:2] - nut_pos[:2])
+        z_diff = ee[2] - nut_pos[2]
+        if xy_dist > 0.02:
             approach = nut_pos.copy()
-            if np.linalg.norm(ee[:2] - nut_pos[:2]) > 0.02:
-                approach[2] = max(approach[2] + 0.05, ee[2])
+            approach[2] = max(approach[2] + 0.05, ee[2])
             action[:3] = reach_pos(ee, approach)
+            action[6] = -1.0
+        elif z_diff > 0.01:
+            action[:3] = reach_pos(ee, nut_pos)
             action[6] = -1.0
         else:
             action[6] = 1.0
@@ -407,12 +423,15 @@ class NutAssemblyPolicy:
 
         if not grasped and not nut_lifted:
             # Phase 1: reach and grasp
-            dist = np.linalg.norm(ee - nut_pos)
-            if dist > 0.02:
+            xy_dist = np.linalg.norm(ee[:2] - nut_pos[:2])
+            z_diff = ee[2] - nut_pos[2]
+            if xy_dist > 0.02:
                 approach = nut_pos.copy()
-                if np.linalg.norm(ee[:2] - nut_pos[:2]) > 0.02:
-                    approach[2] = max(approach[2] + 0.05, ee[2])
+                approach[2] = max(approach[2] + 0.05, ee[2])
                 action[:3] = reach_pos(ee, approach)
+                action[6] = -1.0
+            elif z_diff > 0.01:
+                action[:3] = reach_pos(ee, nut_pos)
                 action[6] = -1.0
             else:
                 action[6] = 1.0
