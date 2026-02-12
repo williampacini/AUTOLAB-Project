@@ -125,7 +125,7 @@ def scripted_stack_policy(obs, env):
 # 3. PickPlaceSingle
 # ---------------------------------------------------------------------------
 
-_PP_OBJECTS = ["Can", "Milk", "Bread", "Cereal"]
+_PP_OBJECTS = ["Can", "Milk", "Bread", "Cereal", "can", "milk", "bread", "cereal"]
 
 
 def _find_object_pos(obs):
@@ -213,7 +213,10 @@ def scripted_door_policy(obs, env):
     Adaptive pull direction: tracks hinge_qpos change over time.
     """
     ee = obs["robot0_eef_pos"]
-    handle = obs["handle_pos"]
+    # Key name varies across robosuite versions
+    handle = (obs.get("handle_pos")
+              or obs.get("door_handle_pos")
+              or obs.get("object-state", np.zeros(10))[:3])
     hinge = obs.get("hinge_qpos", np.zeros(1))
     if isinstance(hinge, np.ndarray):
         hinge = float(hinge.flat[0])

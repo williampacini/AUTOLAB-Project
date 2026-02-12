@@ -81,7 +81,7 @@ os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 ### Action Space (Panda + OSC_POSE)
 7-dim: `[dx, dy, dz, dax, day, daz, gripper]`
 - Position deltas: [-1, 1], typical 0.05–0.3
-- Gripper: -1 = open, +1 = close
+- Gripper: +1 = open, -1 = close (robosuite default for Panda)
 - Control freq: 20Hz
 - Always `np.clip(action, low, high)`
 

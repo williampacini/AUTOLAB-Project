@@ -168,6 +168,7 @@ def collect_demos(env_name, n_demos, output_dir, camera_res=128, max_attempts=5)
                 ep_joint_pos = []
 
                 success = False
+                total_reward = 0.0
                 for step in range(max_steps):
                     action = policy_fn(obs, env)
                     action = np.clip(action, -1, 1)
@@ -182,12 +183,15 @@ def collect_demos(env_name, n_demos, output_dir, camera_res=128, max_attempts=5)
                     ep_joint_pos.append(obs["robot0_joint_pos"].copy())
 
                     obs, reward, done, info = env.step(action)
+                    total_reward += reward
 
                     # Check success via environment's internal check
                     try:
                         task_success = env._check_success()
                     except AttributeError:
-                        task_success = bool(reward > 0.5)
+                        # Shaped rewards accumulate; a single-step threshold
+                        # gives false positives. Use cumulative reward instead.
+                        task_success = bool(total_reward > 1.0)
 
                     if task_success:
                         success = True
@@ -197,7 +201,7 @@ def collect_demos(env_name, n_demos, output_dir, camera_res=128, max_attempts=5)
                     # Save successful episode
                     demo_grp = data_grp.create_group(f"demo_{demo_idx}")
                     demo_grp.create_dataset(
-                        "actions", data=np.array(ep_actions, dtype=np.float64)
+                        "actions", data=np.array(ep_actions, dtype=np.float32)
                     )
                     obs_grp = demo_grp.create_group("obs")
                     obs_grp.create_dataset(
@@ -209,19 +213,19 @@ def collect_demos(env_name, n_demos, output_dir, camera_res=128, max_attempts=5)
                         data=np.array(ep_wrist, dtype=np.uint8),
                     )
                     obs_grp.create_dataset(
-                        "robot0_eef_pos", data=np.array(ep_eef_pos, dtype=np.float64)
+                        "robot0_eef_pos", data=np.array(ep_eef_pos, dtype=np.float32)
                     )
                     obs_grp.create_dataset(
                         "robot0_eef_quat",
-                        data=np.array(ep_eef_quat, dtype=np.float64),
+                        data=np.array(ep_eef_quat, dtype=np.float32),
                     )
                     obs_grp.create_dataset(
                         "robot0_gripper_qpos",
-                        data=np.array(ep_gripper_qpos, dtype=np.float64),
+                        data=np.array(ep_gripper_qpos, dtype=np.float32),
                     )
                     obs_grp.create_dataset(
                         "robot0_joint_pos",
-                        data=np.array(ep_joint_pos, dtype=np.float64),
+                        data=np.array(ep_joint_pos, dtype=np.float32),
                     )
 
                     elapsed = time.time() - t_start

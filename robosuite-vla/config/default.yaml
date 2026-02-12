@@ -13,6 +13,7 @@ env:
 # --- Data ---
 data:
   libero_dir: "data/libero_datasets"
+  policy_repo_id: "local/smolvla-robosuite"  # Required by LeRobot v0.4+
   demos_per_task: 50
   image_size: 256                # Upscale from 128 for SmolVLA
   filter_failed: true            # Remove failed demos from training
@@ -23,7 +24,7 @@ data:
 # --- Training ---
 training:
   model: "lerobot/smolvla_base"
-  batch_size: 64
+  batch_size: 4                   # SmolVLA is memory-heavy; official examples use 4
   learning_rate: 1.0e-4
   weight_decay: 0.01
   warmup_steps: 500

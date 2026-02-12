@@ -84,10 +84,14 @@ def train_with_lerobot_cli(config):
     # Build the LeRobot training command (lerobot-train CLI, LeRobot v0.4+)
     # Use --policy.type=smolvla to auto-infer camera features from dataset.
     # Do NOT use --policy.path=lerobot/smolvla_base (expects 3 cameras, fails with LIBERO's 2).
+    # policy.repo_id is required by LeRobot v0.4+ (see CLAUDE.md)
+    policy_repo_id = data.get("policy_repo_id", "local/smolvla-robosuite")
+
     cmd = [
         "lerobot-train",
         "--policy.type=smolvla",
         "--policy.load_vlm_weights=true",
+        f"--policy.repo_id={policy_repo_id}",
         f"--batch_size={training['batch_size']}",
         f"--steps={training['total_steps']}",
         f"--output_dir={training.get('output_dir', 'outputs/checkpoints/smolvla')}",
@@ -117,6 +121,16 @@ def train_with_lerobot_cli(config):
 
     # GPU device
     cmd.append("--policy.device=cuda")
+
+    # Hyperparameters from config
+    if training.get("learning_rate"):
+        cmd.append(f"--optimizer.lr={training['learning_rate']}")
+    if training.get("weight_decay"):
+        cmd.append(f"--optimizer.weight_decay={training['weight_decay']}")
+    if training.get("warmup_steps"):
+        cmd.append(f"--lr_warmup_steps={training['warmup_steps']}")
+    if training.get("gradient_accumulation", 1) > 1:
+        cmd.append(f"--grad_accumulation_steps={training['gradient_accumulation']}")
 
     # Mixed precision — use top-level --use_amp flag, NOT --policy.dtype
     # (SmolVLAConfig does not have a `dtype` field; passing --policy.dtype crashes)
