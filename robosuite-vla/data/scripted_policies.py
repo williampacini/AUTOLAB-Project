@@ -39,6 +39,43 @@ def _gripper_closed(obs, threshold=0.04):
     return (qpos[0] + qpos[1]) < threshold
 
 
+def _quat_to_rot(q):
+    """Convert quaternion [x, y, z, w] to 3x3 rotation matrix."""
+    x, y, z, w = q
+    return np.array([
+        [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+        [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+        [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)]
+    ])
+
+
+def _gripper_yaw_correction(obs, gain=3.0):
+    """Compute ``action[5]`` to align gripper fingers with the nearest axis.
+
+    The Panda gripper opens along the EEF y-axis.  For a top-down grasp of an
+    axis-aligned object we want that finger axis projected onto the world XY
+    plane to point along world X or world Y (nearest 90-degree snap).
+
+    Returns a single float to add to ``action[5]`` (z-rotation in OSC_POSE).
+    """
+    quat = obs.get("robot0_eef_quat")
+    if quat is None:
+        return 0.0
+    R = _quat_to_rot(quat)
+    # Finger opening direction = EEF y-axis, projected onto world XY
+    finger_xy = R[:2, 1]
+    angle = np.arctan2(finger_xy[1], finger_xy[0])
+    # Snap to nearest 90-degree increment
+    target = round(angle / (np.pi / 2)) * (np.pi / 2)
+    error = target - angle
+    # Wrap to [-pi, pi]
+    if error > np.pi:
+        error -= 2 * np.pi
+    elif error < -np.pi:
+        error += 2 * np.pi
+    return float(np.clip(error * gain, -1, 1))
+
+
 # ---------------------------------------------------------------------------
 # 1. Lift
 # ---------------------------------------------------------------------------
@@ -59,6 +96,9 @@ def scripted_lift_policy(obs, env):
 
     xy_dist = np.linalg.norm(ee[:2] - cube[:2])
     z_diff = ee[2] - cube[2]  # positive = EEF above cube
+
+    # Always correct gripper yaw so fingers align with cube sides
+    action[5] = _gripper_yaw_correction(obs)
 
     if xy_dist > 0.02:
         # Phase 1: Align XY from above, gripper open
@@ -95,6 +135,7 @@ def scripted_stack_policy(obs, env):
     grasped = _gripper_closed(obs)
 
     action = np.zeros(7)
+    action[5] = _gripper_yaw_correction(obs)
 
     cubeA_above_B = cubeA[2] > cubeB[2] + 0.03
     above_B_xy = np.linalg.norm(ee[:2] - cubeB[:2]) < 0.02
@@ -179,6 +220,7 @@ def scripted_pickplace_policy(obs, env):
     grasped = _gripper_closed(obs)
 
     action = np.zeros(7)
+    action[5] = _gripper_yaw_correction(obs)
 
     target_above_bin = bin_pos.copy()
     target_above_bin[2] += 0.15
@@ -323,6 +365,7 @@ def scripted_nut_single_policy(obs, env):
     grasped = _gripper_closed(obs)
 
     action = np.zeros(7)
+    action[5] = _gripper_yaw_correction(obs)
 
     above_peg_xy = np.linalg.norm(ee[:2] - peg_pos[:2]) < 0.015
     nut_lifted = nut_pos[2] > peg_pos[2] + 0.05
@@ -419,6 +462,7 @@ class NutAssemblyPolicy:
         grasped = _gripper_closed(obs)
 
         action = np.zeros(7)
+        action[5] = _gripper_yaw_correction(obs)
         above_peg_xy = np.linalg.norm(ee[:2] - peg_pos[:2]) < 0.015
         nut_lifted = nut_pos[2] > peg_pos[2] + 0.05
 
