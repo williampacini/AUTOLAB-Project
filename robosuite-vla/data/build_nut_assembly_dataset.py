@@ -211,9 +211,14 @@ def step_convert_and_combine(output_dir, image_size=256, max_demos_per_file=None
 
     hdf5_files = []
 
-    # Add HuggingFace downloads (prefer rendered versions)
+    # Add HuggingFace downloads (prefer rendered versions, skip _abs duplicates)
     if ROBOMIMIC_DIR.exists():
         all_hf_files = sorted(ROBOMIMIC_DIR.rglob("*.hdf5"))
+
+        # Filter out _abs variants — these are duplicate demos with absolute actions.
+        # We use relative-action image.hdf5 only to avoid double-counting episodes.
+        all_hf_files = [f for f in all_hf_files if "_abs" not in f.stem]
+
         selected = []
         seen_stems = set()
 
