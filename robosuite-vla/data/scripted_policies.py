@@ -77,46 +77,101 @@ def _gripper_yaw_correction(obs, gain=3.0):
 
 
 # ---------------------------------------------------------------------------
-# 1. Lift
+# 1. Lift (stateful — retry on missed grasp)
 # ---------------------------------------------------------------------------
 
-def scripted_lift_policy(obs, env):
-    """Move toward cube, grasp, lift.
+class LiftPolicy:
+    """Stateful scripted Lift policy.
 
-    Obs keys: ``cube_pos``, ``robot0_eef_pos``.
-    Based on ``colab_notebooks/robosuite_sim.ipynb`` cell-15.
+    Descends with gripper open so fingers go around the cube sides, then
+    closes.  If the grasp fails (fingers closed on nothing), retracts and
+    retries up to *max_attempts* times.
 
-    Once XY-aligned, always commands gripper closed to avoid oscillation
-    between descend-open and close-lift phases.
+    Phases: approach → descend → grasp → lift  (retry loops back to descend)
     """
-    ee = obs["robot0_eef_pos"]
-    cube = obs["cube_pos"]
 
-    action = np.zeros(7)
+    _GRASP_STEPS = 15          # steps to hold close before checking
+    _EMPTY_GRIP_THRESH = 0.02  # finger-gap sum below this → missed
 
-    xy_dist = np.linalg.norm(ee[:2] - cube[:2])
-    z_diff = ee[2] - cube[2]  # positive = EEF above cube
+    def __init__(self, max_attempts=2):
+        self.max_attempts = max_attempts
+        self.reset()
 
-    # Always correct gripper yaw so fingers align with cube sides
-    action[5] = _gripper_yaw_correction(obs)
+    def reset(self):
+        self.phase = "approach"
+        self._grasp_counter = 0
+        self._attempts = 0
 
-    if xy_dist > 0.02:
-        # Phase 1: Align XY from above, gripper open
-        approach = cube.copy()
-        approach[2] += 0.05
-        action[:3] = reach_pos(ee, approach)
-        action[6] = -1.0  # open
-    else:
-        # XY aligned — always close gripper from here on
-        action[6] = 1.0  # close (fingers wrap cube during descent)
-        if z_diff > 0.01:
-            # Phase 2: Descend to cube height
-            action[:3] = reach_pos(ee, cube)
-        else:
-            # Phase 3: At cube height — lift
+    def __call__(self, obs, env):
+        ee = obs["robot0_eef_pos"]
+        cube = obs["cube_pos"]
+
+        action = np.zeros(7)
+        xy_dist = np.linalg.norm(ee[:2] - cube[:2])
+        z_diff = ee[2] - cube[2]
+
+        # Always align gripper yaw
+        action[5] = _gripper_yaw_correction(obs)
+
+        if self.phase == "approach":
+            # Align XY from above, gripper open
+            target = cube.copy()
+            target[2] += 0.05
+            action[:3] = reach_pos(ee, target)
+            action[6] = -1.0
+            if xy_dist < 0.02:
+                self.phase = "descend"
+
+        elif self.phase == "descend":
+            # Go down with gripper OPEN — fingers slide around the cube
+            target = cube.copy()
+            target[2] -= 0.01  # 1 cm below cube center
+            action[:3] = reach_pos(ee, target)
+            action[6] = -1.0  # open
+            if z_diff < -0.005:
+                self.phase = "grasp"
+                self._grasp_counter = 0
+
+        elif self.phase == "grasp":
+            # Close gripper, gentle centering
+            action[:3] = reach_pos(ee, cube, gain=2.0)
+            action[6] = 1.0
+            self._grasp_counter += 1
+            if self._grasp_counter >= self._GRASP_STEPS:
+                qpos = obs.get("robot0_gripper_qpos", np.zeros(2))
+                if (qpos[0] + qpos[1]) < self._EMPTY_GRIP_THRESH:
+                    # Missed — retry if attempts remain
+                    self._attempts += 1
+                    if self._attempts < self.max_attempts:
+                        self.phase = "retry"
+                    else:
+                        self.phase = "lift"
+                else:
+                    self.phase = "lift"
+
+        elif self.phase == "lift":
             action[2] = 1.0
+            action[6] = 1.0
 
-    return np.clip(action, -1, 1)
+        elif self.phase == "retry":
+            # Open gripper, retract above cube, then re-descend
+            target = cube.copy()
+            target[2] += 0.05
+            action[:3] = reach_pos(ee, target)
+            action[6] = -1.0
+            if z_diff > 0.04:
+                self.phase = "descend"
+
+        return np.clip(action, -1, 1)
+
+
+# Keep a plain-function alias for backward compat; wraps the class instance.
+_lift_policy = LiftPolicy()
+
+
+def scripted_lift_policy(obs, env):
+    """Move toward cube, grasp, lift — delegates to :class:`LiftPolicy`."""
+    return _lift_policy(obs, env)
 
 
 # ---------------------------------------------------------------------------
@@ -536,5 +591,7 @@ def get_scripted_policy(env_name):
 
 def reset_policy(env_name):
     """Reset stateful policy state (call before each new episode)."""
-    if env_name == "NutAssembly":
+    if env_name == "Lift":
+        _lift_policy.reset()
+    elif env_name == "NutAssembly":
         _nut_assembly_policy.reset()
