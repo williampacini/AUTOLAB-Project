@@ -90,23 +90,25 @@ class ScriptedNutAssemblyPolicy:
       2. Pick SquareNut -> place on peg1
     """
 
-    def __init__(self, env, noise_std=0.01, k_p=5.0):
+    def __init__(self, env, noise_std=0.01, k_p=3.0):
         self.env = env
         self.noise_std = noise_std
         self.k_p = k_p
         self.phase = "reach_round"
         self.grasp_counter = 0
         self.release_counter = 0
+        self.last_target = None
         # Height offsets for approach/lift
         self.approach_height = 0.15
         self.grasp_height = 0.01
         self.lift_height = 0.20
-        self.place_height = 0.05
+        self.place_height = 0.02
 
     def reset(self):
         self.phase = "reach_round"
         self.grasp_counter = 0
         self.release_counter = 0
+        self.last_target = None
 
     def get_action(self, obs):
         """Compute action based on current phase."""
@@ -130,16 +132,16 @@ class ScriptedNutAssemblyPolicy:
                 self.grasp_counter = 0
 
         elif self.phase == "grasp_round":
-            action[6] = 1.0  # Close gripper
+            action = self._move_to(eef_pos, self.last_target, gripper_close=True)
             self.grasp_counter += 1
-            if self.grasp_counter >= 10:
+            if self.grasp_counter >= 15:
                 self.phase = "lift_round"
 
         elif self.phase == "lift_round":
             target = eef_pos.copy()
-            target[2] = self.lift_height + 0.8  # Lift well above table
+            target[2] = self.lift_height + 0.7  # Lift above table
             action = self._move_to(eef_pos, target, gripper_close=True)
-            if eef_pos[2] > self.lift_height + 0.75:
+            if eef_pos[2] > self.lift_height + 0.65:
                 self.phase = "move_to_peg2"
 
         elif self.phase == "move_to_peg2":
@@ -153,21 +155,21 @@ class ScriptedNutAssemblyPolicy:
             target = get_peg_pos(self.env, 2)
             target[2] += self.place_height
             action = self._move_to(eef_pos, target, gripper_close=True)
-            if np.linalg.norm(eef_pos - target) < 0.02:
+            if np.linalg.norm(eef_pos[:2] - target[:2]) < 0.02:
                 self.phase = "release_round"
                 self.release_counter = 0
 
         elif self.phase == "release_round":
-            action[6] = -1.0  # Open gripper
+            action = self._move_to(eef_pos, self.last_target, gripper_open=True)
             self.release_counter += 1
-            if self.release_counter >= 10:
+            if self.release_counter >= 15:
                 self.phase = "retract_from_peg2"
 
         elif self.phase == "retract_from_peg2":
             target = eef_pos.copy()
-            target[2] = self.lift_height + 0.8
+            target[2] = self.lift_height + 0.7
             action = self._move_to(eef_pos, target, gripper_open=True)
-            if eef_pos[2] > self.lift_height + 0.75:
+            if eef_pos[2] > self.lift_height + 0.65:
                 self.phase = "reach_square"
 
         elif self.phase == "reach_square":
@@ -186,16 +188,16 @@ class ScriptedNutAssemblyPolicy:
                 self.grasp_counter = 0
 
         elif self.phase == "grasp_square":
-            action[6] = 1.0  # Close gripper
+            action = self._move_to(eef_pos, self.last_target, gripper_close=True)
             self.grasp_counter += 1
-            if self.grasp_counter >= 10:
+            if self.grasp_counter >= 15:
                 self.phase = "lift_square"
 
         elif self.phase == "lift_square":
             target = eef_pos.copy()
-            target[2] = self.lift_height + 0.8
+            target[2] = self.lift_height + 0.7
             action = self._move_to(eef_pos, target, gripper_close=True)
-            if eef_pos[2] > self.lift_height + 0.75:
+            if eef_pos[2] > self.lift_height + 0.65:
                 self.phase = "move_to_peg1"
 
         elif self.phase == "move_to_peg1":
@@ -209,14 +211,14 @@ class ScriptedNutAssemblyPolicy:
             target = get_peg_pos(self.env, 1)
             target[2] += self.place_height
             action = self._move_to(eef_pos, target, gripper_close=True)
-            if np.linalg.norm(eef_pos - target) < 0.02:
+            if np.linalg.norm(eef_pos[:2] - target[:2]) < 0.02:
                 self.phase = "release_square"
                 self.release_counter = 0
 
         elif self.phase == "release_square":
-            action[6] = -1.0  # Open gripper
+            action = self._move_to(eef_pos, self.last_target, gripper_open=True)
             self.release_counter += 1
-            if self.release_counter >= 10:
+            if self.release_counter >= 15:
                 self.phase = "done"
 
         elif self.phase == "done":
@@ -230,6 +232,7 @@ class ScriptedNutAssemblyPolicy:
 
     def _move_to(self, current, target, gripper_open=False, gripper_close=False):
         """Proportional controller to move end-effector toward target."""
+        self.last_target = target.copy()
         action = np.zeros(7)
         delta = target - current
         action[:3] = self.k_p * delta
