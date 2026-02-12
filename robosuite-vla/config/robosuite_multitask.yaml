@@ -1,0 +1,67 @@
+# Multi-task training on robosuite scripted demonstrations
+# 6 environments: Lift, Stack, PickPlaceSingle, Door, NutAssemblySingle, NutAssembly
+# 325 total demos (50 each + 75 for NutAssembly)
+
+# --- Environment ---
+env:
+  mujoco_gl: "osmesa"
+  camera_names:
+    - "agentview"
+    - "robot0_eye_in_hand"
+  camera_height: 128
+  camera_width: 128
+  control_freq: 20
+  action_dim: 7
+  max_episode_steps: 600
+
+# --- Data ---
+data:
+  source: "robosuite"
+  hdf5_dir: "data/robosuite_demos"
+  hf_repo: null                   # Set after upload, e.g. "user/robosuite-multitask-demos"
+  local_dir: "outputs/lerobot/robosuite_multitask"
+  demos_per_task: 50
+  nut_assembly_demos: 75
+  image_size: 256
+  filter_failed: true
+  cameras:
+    - "agentview"
+    - "robot0_eye_in_hand"
+
+# --- Training ---
+training:
+  model: "lerobot/smolvla_base"
+  batch_size: 4                   # SmolVLA is memory-heavy; matches official examples
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  total_steps: 50000              # ~325 demos x ~250 steps = ~81k frames; ~2.5 epochs
+  save_freq: 5000
+  eval_freq: 2000
+  gradient_accumulation: 1
+  mixed_precision: "bf16"
+  seed: 42
+  n_action_steps: 50
+  output_dir: "outputs/checkpoints/smolvla_robosuite"
+
+# --- Evaluation ---
+eval:
+  n_episodes_per_task: 50
+  max_steps: 600
+  seeds: [42, 123, 456]
+  record_video: true
+  video_freq: 10
+
+# --- Logging ---
+logging:
+  wandb_project: "smolvla-robosuite"
+  wandb_entity: null
+  log_freq: 100
+  save_gifs: true
+
+# --- Paths ---
+paths:
+  output_dir: "outputs"
+  checkpoint_dir: "outputs/checkpoints"
+  video_dir: "outputs/videos"
+  results_dir: "outputs/results"
