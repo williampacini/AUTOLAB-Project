@@ -7,6 +7,9 @@ generate expert demonstrations.  No learning or human teleoperation needed.
 
 Supported environments:
   Lift, Stack, PickPlaceSingle, Door, NutAssemblySingle, NutAssembly
+
+Gripper convention (robosuite Panda + OSC_POSE):
+  -1 = open, +1 = close
 """
 
 import numpy as np
@@ -59,11 +62,11 @@ def scripted_lift_policy(obs, env):
         if np.linalg.norm(delta[:2]) > 0.02:
             approach[2] += 0.05  # stay above until XY-aligned
         action[:3] = reach_pos(ee, approach)
-        action[6] = 1.0  # gripper open
+        action[6] = -1.0  # gripper open
     else:
         # Close gripper and lift
         action[2] = 1.0
-        action[6] = -1.0
+        action[6] = 1.0
 
     return np.clip(action, -1, 1)
 
@@ -96,27 +99,27 @@ def scripted_stack_policy(obs, env):
             if np.linalg.norm(ee[:2] - cubeA[:2]) > 0.02:
                 approach[2] += 0.05
             action[:3] = reach_pos(ee, approach)
-            action[6] = 1.0  # open
+            action[6] = -1.0  # open
         else:
-            action[6] = -1.0  # close
+            action[6] = 1.0  # close
     elif grasped and not (above_B_xy and ee[2] > cubeB[2] + 0.06):
         # Phase 2: lift and move above cubeB
         target = cubeB.copy()
         target[2] += 0.10
         action[:3] = reach_pos(ee, target)
-        action[6] = -1.0  # keep closed
+        action[6] = 1.0  # keep closed
     elif grasped:
         # Phase 3: lower onto cubeB
         target = cubeB.copy()
         target[2] += 0.025
         if ee[2] > target[2] + 0.01:
             action[:3] = reach_pos(ee, target, gain=5.0)
-            action[6] = -1.0
+            action[6] = 1.0
         else:
-            action[6] = 1.0  # release
+            action[6] = -1.0  # release
     else:
         # cubeA already above cubeB and not grasped → done, hold
-        action[6] = 1.0
+        action[6] = -1.0
 
     return np.clip(action, -1, 1)
 
@@ -179,25 +182,25 @@ def scripted_pickplace_policy(obs, env):
             if np.linalg.norm(ee[:2] - obj_pos[:2]) > 0.02:
                 approach[2] += 0.05
             action[:3] = reach_pos(ee, approach)
-            action[6] = 1.0
-        else:
             action[6] = -1.0
+        else:
+            action[6] = 1.0
     elif grasped and np.linalg.norm(ee[:2] - bin_pos[:2]) > 0.03:
         # Phase 2: lift and move above bin
         if ee[2] < obj_pos[2] + 0.10:
             action[2] = 1.0  # lift first
         else:
             action[:3] = reach_pos(ee, target_above_bin)
-        action[6] = -1.0
+        action[6] = 1.0
     else:
         # Phase 3: lower into bin and release
         drop = bin_pos.copy()
         drop[2] += 0.05
         if ee[2] > drop[2] + 0.02:
             action[:3] = reach_pos(ee, drop, gain=5.0)
-            action[6] = -1.0
-        else:
             action[6] = 1.0
+        else:
+            action[6] = -1.0
 
     return np.clip(action, -1, 1)
 
@@ -228,17 +231,17 @@ def scripted_door_policy(obs, env):
     if dist > 0.02:
         # Phase 1: reach handle
         action[:3] = reach_pos(ee, handle)
-        action[6] = 1.0  # open gripper
+        action[6] = -1.0  # open gripper
     elif hinge < 0.25:
         # Phase 2: grasp and pull
-        action[6] = -1.0
+        action[6] = 1.0
         # Pull toward robot base (negative Y direction generally opens door)
         # Also try rotating the handle
         action[1] = -1.0
         action[2] = 0.15  # slight upward to keep contact
     else:
         # Door open enough, keep holding
-        action[6] = -1.0
+        action[6] = 1.0
 
     return np.clip(action, -1, 1)
 
@@ -318,27 +321,27 @@ def scripted_nut_single_policy(obs, env):
             if np.linalg.norm(ee[:2] - nut_pos[:2]) > 0.02:
                 approach[2] = max(approach[2] + 0.05, ee[2])
             action[:3] = reach_pos(ee, approach)
-            action[6] = 1.0
-        else:
             action[6] = -1.0
+        else:
+            action[6] = 1.0
     elif grasped and not above_peg_xy:
         # Phase 2: lift and align above peg
         target = peg_pos.copy()
         target[2] += 0.12
         action[:3] = reach_pos(ee, target)
-        action[6] = -1.0
+        action[6] = 1.0
     elif grasped:
         # Phase 3: lower onto peg
         insert = peg_pos.copy()
         insert[2] += 0.02
         if ee[2] > insert[2] + 0.01:
             action[:3] = reach_pos(ee, insert, gain=5.0)
-            action[6] = -1.0
+            action[6] = 1.0
         else:
-            action[6] = 1.0  # release
+            action[6] = -1.0  # release
     else:
         # Nut is on peg and released
-        action[6] = 1.0
+        action[6] = -1.0
 
     return np.clip(action, -1, 1)
 
@@ -410,16 +413,16 @@ class NutAssemblyPolicy:
                 if np.linalg.norm(ee[:2] - nut_pos[:2]) > 0.02:
                     approach[2] = max(approach[2] + 0.05, ee[2])
                 action[:3] = reach_pos(ee, approach)
-                action[6] = 1.0
-            else:
                 action[6] = -1.0
+            else:
+                action[6] = 1.0
                 self._grasp_steps += 1
         elif grasped and not above_peg_xy:
             # Phase 2: lift and align
             target = peg_pos.copy()
             target[2] += 0.12
             action[:3] = reach_pos(ee, target)
-            action[6] = -1.0
+            action[6] = 1.0
             self._grasp_steps = 0
         elif grasped:
             # Phase 3: lower and insert
@@ -427,12 +430,12 @@ class NutAssemblyPolicy:
             insert[2] += 0.02
             if ee[2] > insert[2] + 0.01:
                 action[:3] = reach_pos(ee, insert, gain=5.0)
-                action[6] = -1.0
+                action[6] = 1.0
             else:
-                action[6] = 1.0  # release
+                action[6] = -1.0  # release
                 self._grasp_steps = 0
         else:
-            action[6] = 1.0
+            action[6] = -1.0
 
         return np.clip(action, -1, 1)
 
