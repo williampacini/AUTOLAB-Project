@@ -7,7 +7,7 @@ setup(
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[
-        "robosuite>=1.4.1,<1.5",
+        "robosuite>=1.4.1",
         "mujoco>=3.0",
         "numpy>=2.0,<2.1",
         "h5py>=3.0",

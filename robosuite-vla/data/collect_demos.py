@@ -33,7 +33,12 @@ os.environ.setdefault("MUJOCO_GL", "osmesa")
 os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
 
 import robosuite as suite
-from robosuite.controllers import load_controller_config
+
+try:
+    from robosuite.controllers import load_controller_config
+except ImportError:
+    # robosuite >= 1.5 renamed the function
+    from robosuite.controllers import load_part_controller_config as load_controller_config
 
 from scripted_policies import get_scripted_policy, reset_policy
 
