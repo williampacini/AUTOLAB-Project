@@ -35,10 +35,15 @@ os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
 import robosuite as suite
 
 try:
-    from robosuite.controllers import load_controller_config
+    # robosuite >= 1.5: composite controller architecture
+    from robosuite.controllers import load_composite_controller_config
+
+    _USE_COMPOSITE = True
 except ImportError:
-    # robosuite >= 1.5 renamed the function
-    from robosuite.controllers import load_part_controller_config as load_controller_config
+    # robosuite < 1.5: simple controller config
+    from robosuite.controllers import load_controller_config
+
+    _USE_COMPOSITE = False
 
 from scripted_policies import get_scripted_policy, reset_policy
 
@@ -90,7 +95,10 @@ def make_env(env_name, camera_res=128):
       - Two cameras: agentview + robot0_eye_in_hand (for SmolVLA)
       - OSC_POSE controller → 7D action space
     """
-    controller_config = load_controller_config(default_controller="OSC_POSE")
+    if _USE_COMPOSITE:
+        controller_config = load_composite_controller_config(controller="BASIC")
+    else:
+        controller_config = load_controller_config(default_controller="OSC_POSE")
 
     env = suite.make(
         env_name=env_name,

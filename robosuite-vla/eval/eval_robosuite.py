@@ -72,12 +72,15 @@ def make_env(env_name, camera_res=128):
     import robosuite as suite
 
     try:
-        from robosuite.controllers import load_controller_config
-    except ImportError:
-        # robosuite >= 1.5 renamed the function
-        from robosuite.controllers import load_part_controller_config as load_controller_config
+        # robosuite >= 1.5: composite controller architecture
+        from robosuite.controllers import load_composite_controller_config
 
-    controller_config = load_controller_config(default_controller="OSC_POSE")
+        controller_config = load_composite_controller_config(controller="BASIC")
+    except ImportError:
+        # robosuite < 1.5: simple controller config
+        from robosuite.controllers import load_controller_config
+
+        controller_config = load_controller_config(default_controller="OSC_POSE")
     env = suite.make(
         env_name=env_name,
         robots="Panda",
