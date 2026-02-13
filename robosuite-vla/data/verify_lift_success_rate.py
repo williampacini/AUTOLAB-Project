@@ -222,7 +222,7 @@ def evaluate_env(env_name, n_episodes, max_steps, seed_start=0, hdf5_dir=None):
     print(f"{'='*70}")
 
     for ep in range(n_episodes):
-        env.seed(seed_start + ep)
+        np.random.seed(seed_start + ep)
         result = run_episode(env, policy_fn, max_steps)
 
         for key in counts:
