@@ -285,7 +285,8 @@ def scripted_stack_policy(obs, env):
 # ---------------------------------------------------------------------------
 
 _PP_OBJECTS = ["Can", "Milk", "Bread", "Cereal",
-               "can", "milk", "bread", "cereal"]
+               "can", "milk", "bread", "cereal",
+               "Can0", "Milk0", "Bread0", "Cereal0"]
 
 
 def _find_object_pos(obs):
@@ -294,19 +295,46 @@ def _find_object_pos(obs):
         key = f"{name}_pos"
         if key in obs:
             return obs[key]
+    # Broad search: any obs key ending in _pos that matches known objects
+    for key in obs:
+        if key.endswith("_pos") and any(
+            obj.lower() in key.lower() for obj in ["can", "milk", "bread", "cereal"]
+        ):
+            return obs[key]
     if "object-state" in obs:
         return obs["object-state"][:3]
     raise KeyError("Cannot find object position in obs")
 
 
 def _get_target_bin_pos(env):
-    """Get target bin position from the simulation model."""
-    for name in ["bin2_body", "bin2", "visual_bin_body"]:
+    """Get target bin position from the simulation model.
+
+    Searches for the target bin body using multiple naming conventions
+    across robosuite versions (1.4 and 1.5+).
+    """
+    # Try direct env attributes first (robosuite stores bin positions)
+    if hasattr(env, "target_bin_placements"):
+        placements = env.target_bin_placements
+        if len(placements) > 0:
+            return np.array(placements[0][:3])
+
+    # Try common body names across robosuite versions
+    for name in ["bin2_body", "bin2", "bin1_body", "bin1",
+                  "visual_bin_body", "table_visual_bin"]:
         try:
             bid = env.sim.model.body_name2id(name)
             return env.sim.data.body_xpos[bid].copy()
-        except ValueError:
+        except (ValueError, KeyError):
             continue
+
+    # Broad search: find any body with "bin" in the name
+    for i in range(env.sim.model.nbody):
+        name = env.sim.model.body_id2name(i)
+        if "bin" in name.lower():
+            pos = env.sim.data.body_xpos[i].copy()
+            if np.linalg.norm(pos) > 0.1:  # skip origin bodies
+                return pos
+
     return np.array([0.18, 0.0, 0.82])
 
 
@@ -424,9 +452,11 @@ def scripted_door_policy(obs, env):
     stateless approach with yaw correction.
     """
     ee = obs["robot0_eef_pos"]
-    handle = (obs.get("handle_pos")
-              or obs.get("door_handle_pos")
-              or obs.get("object-state", np.zeros(10))[:3])
+    handle = obs.get("handle_pos")
+    if handle is None:
+        handle = obs.get("door_handle_pos")
+    if handle is None:
+        handle = obs.get("object-state", np.zeros(10))[:3]
     hinge = obs.get("hinge_qpos", np.zeros(1))
     if isinstance(hinge, np.ndarray):
         hinge = float(hinge.flat[0])
@@ -456,7 +486,10 @@ def scripted_door_policy(obs, env):
 # 5. NutAssemblySingle (stateful — retry on missed grasp)
 # ---------------------------------------------------------------------------
 
-_NUT_NAMES = ["RoundNut", "SquareNut"]
+_NUT_NAMES = ["RoundNut", "SquareNut",
+              "RoundNut0", "SquareNut0",
+              "roundnut", "squarenut",
+              "round-nut", "square-nut"]
 
 
 def _find_nut_pos(obs, names=None):
@@ -466,30 +499,56 @@ def _find_nut_pos(obs, names=None):
         key = f"{name}_pos"
         if key in obs:
             return name, obs[key]
+    # Broad search: any key ending in _pos that contains "nut"
+    for key in obs:
+        if "nut" in key.lower() and key.endswith("_pos"):
+            name = key[:-4]  # strip "_pos"
+            return name, obs[key]
     if "object-state" in obs:
         return "unknown", obs["object-state"][:3]
     raise KeyError("Cannot find nut position in obs")
 
 
 def _get_peg_pos(env, nut_name):
-    """Get the target peg position for *nut_name* from the sim model."""
+    """Get the target peg position for *nut_name* from the sim model.
+
+    Searches for peg bodies using multiple naming conventions across
+    robosuite versions (1.4 and 1.5+).
+    """
     if "Square" in nut_name:
-        candidates = ["peg1", "peg1_table"]
+        candidates = ["peg1", "peg1_table", "peg1_body"]
     else:
-        candidates = ["peg2", "peg2_table"]
+        candidates = ["peg2", "peg2_table", "peg2_body"]
     for name in candidates:
         try:
             bid = env.sim.model.body_name2id(name)
             return env.sim.data.body_xpos[bid].copy()
-        except ValueError:
+        except (ValueError, KeyError):
             continue
+
+    # Try numbered pegs generically
     for i in range(1, 5):
-        for prefix in ["peg", "peg_"]:
+        for prefix in ["peg", "peg_", "peg_body"]:
             try:
                 bid = env.sim.model.body_name2id(f"{prefix}{i}")
                 return env.sim.data.body_xpos[bid].copy()
-            except ValueError:
+            except (ValueError, KeyError):
                 continue
+
+    # Broad search: find any body with "peg" in the name
+    peg_bodies = []
+    for i in range(env.sim.model.nbody):
+        name = env.sim.model.body_id2name(i)
+        if "peg" in name.lower():
+            pos = env.sim.data.body_xpos[i].copy()
+            peg_bodies.append((name, pos))
+
+    if peg_bodies:
+        # If multiple pegs found, pick based on nut type:
+        # Square nuts typically go to the first peg, round to the second
+        idx = 0 if "Square" in nut_name else min(1, len(peg_bodies) - 1)
+        return peg_bodies[idx][1]
+
     raise RuntimeError(f"Cannot find peg body for {nut_name} in sim model")
 
 
