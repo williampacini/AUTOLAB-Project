@@ -73,6 +73,7 @@ os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 - **F-string backslash in Colab**: Use string concatenation instead of `\` line continuation in f-strings
 - **SmolVLA 3-camera mismatch**: `--policy.path=lerobot/smolvla_base` expects 3 cameras but LIBERO has 2. Use `--policy.type=smolvla --policy.load_vlm_weights=true` instead (auto-infers features from dataset)
 - **convert_to_lerobot.py info.json format**: LeRobot v0.4+ requires `features` dict in `info.json`. Old format used flat keys (`task_name`, `action_dim`, etc.) which causes `KeyError: 'features'`. Parquet must use array columns (`action`, `observation.state`) not scalar columns (`action_dx`, `action_dy`). Fixed in convert_to_lerobot.py.
+- **LeRobot v3.0 metadata format**: `tasks.parquet` and `episodes.parquet` (NOT `.jsonl`). The installed LeRobot calls `pd.read_parquet()` for these files. Using `.jsonl` causes `FileNotFoundError`. Set `codebase_version: "v3.0"` in info.json.
 - **SmolVLA batch size**: Official examples use batch_size=4 (not 64). SmolVLA is memory-heavy on A100
 - **SmolVLA image keys**: Must use `observation.images.image` and `observation.images.image2` (not `observation.image`). The `.images.` prefix is required.
 - **SmolVLA wrist camera**: Provide `robot0_eye_in_hand_image` as `observation.images.image2` during inference

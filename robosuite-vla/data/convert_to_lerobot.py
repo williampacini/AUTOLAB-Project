@@ -127,8 +127,8 @@ def save_lerobot_format(episodes, output_dir, task_name):
       - data/chunk-000/file-000.parquet  (array columns: action, observation.state, etc.)
       - videos/observation.images.image/chunk-000/file-{ep_idx:03d}.mp4
       - meta/info.json  (with 'features' dict required by LeRobot v0.4+)
-      - meta/episodes.jsonl  (episode metadata)
-      - meta/tasks.jsonl  (task descriptions)
+      - meta/episodes.parquet  (episode metadata)
+      - meta/tasks.parquet  (task descriptions)
     """
     import pandas as pd
 
@@ -251,7 +251,7 @@ def save_lerobot_format(episodes, output_dir, task_name):
 
     # Save info.json (LeRobot v0.4+ format)
     meta = {
-        "codebase_version": "v2.1",
+        "codebase_version": "v3.0",
         "robot_type": "panda",
         "total_episodes": len(episodes),
         "total_frames": total_frames,
@@ -269,20 +269,23 @@ def save_lerobot_format(episodes, output_dir, task_name):
     with open(output_dir / "meta" / "info.json", "w") as f:
         json.dump(meta, f, indent=2)
 
-    # Save episodes.jsonl
-    with open(output_dir / "meta" / "episodes.jsonl", "w") as f:
-        for ep_idx, length in enumerate(episode_lengths):
-            ep_meta = {
-                "episode_index": ep_idx,
-                "tasks": [episodes[ep_idx]["task"]],
-                "length": length,
-            }
-            f.write(json.dumps(ep_meta) + "\n")
+    # Save episodes.parquet (LeRobot v3.0 expects parquet, not jsonl)
+    episodes_records = []
+    for ep_idx, length in enumerate(episode_lengths):
+        episodes_records.append({
+            "episode_index": ep_idx,
+            "tasks": json.dumps([episodes[ep_idx]["task"]]),
+            "length": length,
+        })
+    pd.DataFrame(episodes_records).to_parquet(
+        output_dir / "meta" / "episodes.parquet", index=False
+    )
 
-    # Save tasks.jsonl
-    with open(output_dir / "meta" / "tasks.jsonl", "w") as f:
-        for task_idx, task in enumerate(tasks):
-            f.write(json.dumps({"task_index": task_idx, "task": task}) + "\n")
+    # Save tasks.parquet
+    tasks_records = [{"task_index": i, "task": t} for i, t in enumerate(tasks)]
+    pd.DataFrame(tasks_records).to_parquet(
+        output_dir / "meta" / "tasks.parquet", index=False
+    )
 
     return df
 
