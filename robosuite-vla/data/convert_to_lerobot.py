@@ -105,69 +105,184 @@ def convert_hdf5_to_lerobot(hdf5_path, output_dir, image_size=256, task_language
     return episodes
 
 
+def _build_state_vector(states, t):
+    """Concatenate state observations into a single vector for timestep t.
+
+    Order: eef_pos (3) + eef_quat (4) + gripper_qpos (2) + joint_pos (7) = 16
+    Falls back gracefully if some keys are missing.
+    """
+    parts = []
+    for key in ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos", "robot0_joint_pos"]:
+        if key in states and t < len(states[key]):
+            parts.append(states[key][t].astype(np.float32))
+    if parts:
+        return np.concatenate(parts)
+    return np.zeros(0, dtype=np.float32)
+
+
 def save_lerobot_format(episodes, output_dir, task_name):
-    """Save episodes in LeRobot-compatible format."""
+    """Save episodes in LeRobot v0.4+ compatible format.
+
+    Produces:
+      - data/chunk-000/file-000.parquet  (array columns: action, observation.state, etc.)
+      - videos/observation.images.image/chunk-000/file-{ep_idx:03d}.mp4
+      - meta/info.json  (with 'features' dict required by LeRobot v0.4+)
+      - meta/episodes.jsonl  (episode metadata)
+      - meta/tasks.jsonl  (task descriptions)
+    """
     import pandas as pd
 
     output_dir = Path(output_dir)
-    (output_dir / "data").mkdir(parents=True, exist_ok=True)
-    (output_dir / "videos").mkdir(parents=True, exist_ok=True)
+    chunk_dir = output_dir / "data" / "chunk-000"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "meta").mkdir(parents=True, exist_ok=True)
+
+    # Determine state dimension from first episode
+    sample_states = episodes[0].get("states", {})
+    sample_state = _build_state_vector(sample_states, 0)
+    state_dim = len(sample_state)
+
+    # Determine image size
+    has_images = "images" in episodes[0]
+    if has_images:
+        img_shape = list(episodes[0]["images"].shape[1:])  # [H, W, C]
+    else:
+        img_shape = [256, 256, 3]
+
+    # Build state motor names
+    state_motor_names = []
+    for key, dim_names in [
+        ("robot0_eef_pos", ["x", "y", "z"]),
+        ("robot0_eef_quat", ["qx", "qy", "qz", "qw"]),
+        ("robot0_gripper_qpos", ["finger0", "finger1"]),
+        ("robot0_joint_pos", ["j0", "j1", "j2", "j3", "j4", "j5", "j6"]),
+    ]:
+        if key in sample_states:
+            state_motor_names.extend(dim_names)
+
+    # Collect unique tasks
+    tasks = list(dict.fromkeys(ep["task"] for ep in episodes))
+    task_to_idx = {t: i for i, t in enumerate(tasks)}
 
     all_rows = []
     episode_lengths = []
+    global_idx = 0
 
     for ep_idx, ep in enumerate(tqdm(episodes, desc="  Saving")):
         n_steps = ep["n_steps"]
         episode_lengths.append(n_steps)
+        task_idx = task_to_idx[ep["task"]]
 
         for t in range(n_steps):
             row = {
+                "index": global_idx,
                 "episode_index": ep_idx,
                 "frame_index": t,
-                "timestamp": t / 20.0,  # 20Hz
-                "task": ep["task"],
+                "timestamp": t / 20.0,
+                "task_index": task_idx,
+                "action": ep["actions"][t].astype(np.float32).tolist(),
             }
 
-            # Actions
-            for i, name in enumerate(["dx", "dy", "dz", "dax", "day", "daz", "gripper"]):
-                row[f"action_{name}"] = float(ep["actions"][t, i])
+            # State as single concatenated vector
+            if ep.get("states"):
+                row["observation.state"] = _build_state_vector(ep["states"], t).tolist()
 
-            # States
-            for key, values in ep.get("states", {}).items():
-                if t < len(values):
-                    for i, v in enumerate(values[t]):
-                        row[f"{key}_{i}"] = float(v)
+            # Image path reference (LeRobot loads videos separately)
+            if has_images:
+                row["observation.images.image"] = f"videos/observation.images.image/chunk-000/episode_{ep_idx:06d}.mp4"
 
             all_rows.append(row)
+            global_idx += 1
 
-        # Save video if images available
+        # Save video
         if "images" in ep:
+            video_dir = output_dir / "videos" / "observation.images.image" / "chunk-000"
+            video_dir.mkdir(parents=True, exist_ok=True)
             _save_episode_video(
                 ep["images"],
-                output_dir / "videos" / f"episode_{ep_idx:04d}.mp4",
+                video_dir / f"episode_{ep_idx:06d}.mp4",
             )
 
     # Save as parquet
     df = pd.DataFrame(all_rows)
-    parquet_path = output_dir / "data" / f"{task_name}.parquet"
+    parquet_path = chunk_dir / "file-000.parquet"
     df.to_parquet(parquet_path, index=False)
     print(f"  Saved {len(df)} rows to {parquet_path}")
 
-    # Save metadata
+    # Build features dict (required by LeRobot v0.4+)
+    features = {
+        "action": {
+            "dtype": "float32",
+            "shape": [7],
+            "names": {"motors": ["dx", "dy", "dz", "dax", "day", "daz", "gripper"]},
+        },
+        "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+        "frame_index": {"dtype": "int64", "shape": [1], "names": None},
+        "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+        "index": {"dtype": "int64", "shape": [1], "names": None},
+        "task_index": {"dtype": "int64", "shape": [1], "names": None},
+    }
+
+    if state_dim > 0:
+        features["observation.state"] = {
+            "dtype": "float32",
+            "shape": [state_dim],
+            "names": {"motors": state_motor_names} if state_motor_names else None,
+        }
+
+    if has_images:
+        features["observation.images.image"] = {
+            "dtype": "video",
+            "shape": img_shape,
+            "names": ["height", "width", "channel"],
+            "video_info": {
+                "video.fps": 20.0,
+                "video.codec": "libx264",
+                "video.pix_fmt": "yuv420p",
+                "video.is_depth_map": False,
+                "has_audio": False,
+            },
+        }
+
+    total_frames = sum(episode_lengths)
+
+    # Build splits
+    splits = {"train": f"0:{len(episodes)}"}
+
+    # Save info.json (LeRobot v0.4+ format)
     meta = {
-        "task_name": task_name,
-        "n_episodes": len(episodes),
-        "episode_lengths": episode_lengths,
-        "total_frames": sum(episode_lengths),
+        "codebase_version": "v2.1",
+        "robot_type": "panda",
+        "total_episodes": len(episodes),
+        "total_frames": total_frames,
+        "total_tasks": len(tasks),
+        "total_videos": len(episodes) if has_images else 0,
+        "total_chunks": 1,
+        "chunks_size": 1000,
         "fps": 20,
-        "action_dim": 7,
-        "action_names": ["dx", "dy", "dz", "dax", "day", "daz", "gripper"],
-        "image_size": episodes[0].get("images", np.zeros((1, 128, 128, 3))).shape[1]
-        if episodes else 128,
+        "splits": splits,
+        "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/episode_{episode_index:06d}.mp4"
+        if has_images else None,
+        "features": features,
     }
     with open(output_dir / "meta" / "info.json", "w") as f:
         json.dump(meta, f, indent=2)
+
+    # Save episodes.jsonl
+    with open(output_dir / "meta" / "episodes.jsonl", "w") as f:
+        for ep_idx, length in enumerate(episode_lengths):
+            ep_meta = {
+                "episode_index": ep_idx,
+                "tasks": [episodes[ep_idx]["task"]],
+                "length": length,
+            }
+            f.write(json.dumps(ep_meta) + "\n")
+
+    # Save tasks.jsonl
+    with open(output_dir / "meta" / "tasks.jsonl", "w") as f:
+        for task_idx, task in enumerate(tasks):
+            f.write(json.dumps({"task_index": task_idx, "task": task}) + "\n")
 
     return df
 
