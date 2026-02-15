@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Comprehensive evaluation: all robosuite tasks + base SmolVLA comparison.
 
-Evaluates TWO models side-by-side:
-  1. Fine-tuned SmolVLA (your trained checkpoint, WITH postprocessing)
-  2. Base SmolVLA pretrained weights (lerobot/smolvla_base, NO postprocessing)
+Evaluates THREE configurations side-by-side:
+  1. Fine-tuned SmolVLA (WITH postprocessing / action unnormalization)
+  2. Fine-tuned SmolVLA (NO postprocessing / raw actions)
+  3. Base SmolVLA pretrained weights (lerobot/smolvla_base, NO postprocessing)
 
 Across ALL robosuite single-arm scenarios:
   - Lift, Door, NutAssemblySquare, NutAssemblyRound, NutAssembly,
     PickPlaceSingle, Stack, Wipe
 
+Includes action magnitude diagnostics to identify normalization issues.
 Produces a JSON results file + comparison table.
 
 Usage (CLI):
@@ -248,6 +250,8 @@ def get_action(policy, obs, task_language, tokenizer, device="cuda",
 
     If postprocess_fn is provided, actions are unnormalized (fine-tuned path).
     Otherwise, raw actions are used (base model path).
+
+    Returns (clipped_action, raw_action_before_clip) for diagnostics.
     """
     from PIL import Image as PILImage
 
@@ -303,7 +307,8 @@ def get_action(policy, obs, task_language, tokenizer, device="cuda",
         else:
             action = np.array(a).flatten()
 
-    return np.clip(action[:7], -1, 1)
+    raw = action[:7].copy()
+    return np.clip(raw, -1, 1), raw
 
 
 # ---------------------------------------------------------------------------
@@ -311,18 +316,20 @@ def get_action(policy, obs, task_language, tokenizer, device="cuda",
 # ---------------------------------------------------------------------------
 def run_episode(env, policy, task_language, tokenizer, device, img_size,
                 state_dim, postprocess_fn, max_steps):
-    """Run one episode. Returns (success, total_reward, steps)."""
+    """Run one episode. Returns (success, total_reward, steps, action_stats)."""
     obs = env.reset()
     policy.reset()
 
     total_reward = 0.0
     success = False
+    raw_actions = []
 
     for step in range(max_steps):
-        action = get_action(
+        action, raw = get_action(
             policy, obs, task_language, tokenizer,
             device, img_size, state_dim, postprocess_fn,
         )
+        raw_actions.append(raw)
         obs, reward, done, info = env.step(action)
         total_reward += reward
 
@@ -332,7 +339,15 @@ def run_episode(env, policy, task_language, tokenizer, device, img_size,
         if done:
             break
 
-    return success, total_reward, step + 1
+    # Action magnitude diagnostics
+    raw_arr = np.array(raw_actions)
+    action_stats = {
+        "mean_abs": float(np.mean(np.abs(raw_arr))),
+        "max_abs": float(np.max(np.abs(raw_arr))),
+        "mean_per_dim": np.mean(np.abs(raw_arr), axis=0).tolist(),
+    }
+
+    return success, total_reward, step + 1, action_stats
 
 
 # ---------------------------------------------------------------------------
@@ -372,10 +387,11 @@ def evaluate_model_all_tasks(
 
         task_successes = 0
         episodes = []
+        all_action_stats = []
 
         for ep in range(n_episodes):
             t0 = time.time()
-            success, reward, steps = run_episode(
+            success, reward, steps, act_stats = run_episode(
                 env, policy, task_lang, tokenizer,
                 device, camera_size, state_dim, postprocess_fn, horizon,
             )
@@ -384,18 +400,26 @@ def evaluate_model_all_tasks(
             if success:
                 task_successes += 1
 
+            all_action_stats.append(act_stats)
             episodes.append({
                 "episode": ep,
                 "success": success,
                 "reward": float(reward),
                 "steps": steps,
                 "time_s": round(elapsed, 1),
+                "action_mean_abs": act_stats["mean_abs"],
+                "action_max_abs": act_stats["max_abs"],
             })
 
             tag = "OK" if success else "  "
-            print(f"    ep {ep:3d}: {tag} reward={reward:7.2f} steps={steps:4d} ({elapsed:.1f}s)")
+            print(f"    ep {ep:3d}: {tag} R={reward:7.2f} steps={steps:4d} "
+                  f"|act|={act_stats['mean_abs']:.4f} max={act_stats['max_abs']:.4f} ({elapsed:.1f}s)")
 
         env.close()
+
+        # Aggregate action diagnostics
+        mean_act_mag = float(np.mean([s["mean_abs"] for s in all_action_stats]))
+        max_act_mag = float(np.max([s["max_abs"] for s in all_action_stats]))
 
         sr = task_successes / n_episodes
         model_results[task_key] = {
@@ -407,8 +431,13 @@ def evaluate_model_all_tasks(
             "episodes": episodes,
             "avg_reward": float(np.mean([e["reward"] for e in episodes])),
             "avg_steps": float(np.mean([e["steps"] for e in episodes])),
+            "action_diagnostics": {
+                "mean_abs": mean_act_mag,
+                "max_abs": max_act_mag,
+            },
         }
-        print(f"  => {task_key}: {task_successes}/{n_episodes} ({sr:.1%})")
+        print(f"  => {task_key}: {task_successes}/{n_episodes} ({sr:.1%})  "
+              f"action magnitude: avg={mean_act_mag:.4f} max={max_act_mag:.4f}")
 
     return model_results
 
@@ -419,57 +448,85 @@ def evaluate_model_all_tasks(
 def print_comparison_table(all_results, task_keys):
     """Print a side-by-side comparison table of all models."""
 
-    # Header
     model_names = list(all_results.keys())
-    col_w = 22
-    header = f"{'Task':<25}"
+    col_w = 26
+    header = f"{'Task':<22}"
     for m in model_names:
-        header += f"  {m:>{col_w}}"
+        header += f" | {m:^{col_w}}"
     sep = "=" * len(header)
 
     print(f"\n{sep}")
-    print("  COMPARISON: Success Rate (successes/episodes) | Avg Reward")
+    print("  COMPARISON: Success Rate | Avg Reward | Action Magnitude")
     print(sep)
     print(header)
     print("-" * len(header))
 
     for task_key in task_keys:
-        row = f"{task_key:<25}"
+        row = f"{task_key:<22}"
         for m in model_names:
             r = all_results[m].get(task_key)
             if r is None or "error" in r:
-                row += f"  {'SKIP':>{col_w}}"
+                row += f" | {'SKIP':^{col_w}}"
             else:
                 sr = r["success_rate"]
                 ns = r["n_success"]
                 ne = r["n_episodes"]
                 avg_r = r["avg_reward"]
-                cell = f"{sr:.0%} ({ns}/{ne}) R={avg_r:.1f}"
-                row += f"  {cell:>{col_w}}"
+                act_m = r.get("action_diagnostics", {}).get("mean_abs", 0)
+                cell = f"{sr:.0%}({ns}/{ne}) R={avg_r:.1f} |a|={act_m:.3f}"
+                row += f" | {cell:^{col_w}}"
         print(row)
 
     # Overall
     print("-" * len(header))
-    row = f"{'OVERALL':<25}"
+    row = f"{'OVERALL':<22}"
     for m in model_names:
-        total_s = sum(
-            r["n_success"]
-            for r in all_results[m].values()
-            if "error" not in r
-        )
-        total_e = sum(
-            r["n_episodes"]
-            for r in all_results[m].values()
-            if "error" not in r
-        )
+        total_s = sum(r["n_success"] for r in all_results[m].values() if "error" not in r)
+        total_e = sum(r["n_episodes"] for r in all_results[m].values() if "error" not in r)
+        avg_act = np.mean([
+            r.get("action_diagnostics", {}).get("mean_abs", 0)
+            for r in all_results[m].values() if "error" not in r
+        ]) if total_e > 0 else 0
         if total_e > 0:
             overall_sr = total_s / total_e
-            cell = f"{overall_sr:.0%} ({total_s}/{total_e})"
+            cell = f"{overall_sr:.0%}({total_s}/{total_e}) |a|={avg_act:.3f}"
         else:
             cell = "N/A"
-        row += f"  {cell:>{col_w}}"
+        row += f" | {cell:^{col_w}}"
     print(row)
     print(sep)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+def dump_postprocessor_stats(checkpoint_path):
+    """Print the action normalization stats from the postprocessor.
+
+    These stats reveal whether unnormalization is collapsing action magnitudes.
+    """
+    pretrained_dir = find_pretrained_dir(checkpoint_path)
+    try:
+        from safetensors.torch import load_file
+    except ImportError:
+        print("  [diag] safetensors not installed, cannot dump stats")
+        return
+
+    print("\n  [DIAGNOSTICS] Postprocessor normalization statistics:")
+    for sf in sorted(pretrained_dir.glob("*postprocessor*.safetensors")):
+        tensors = load_file(str(sf))
+        for key in sorted(tensors.keys()):
+            t = tensors[key]
+            print(f"    {key}: shape={list(t.shape)} values={t.cpu().numpy().tolist()}")
+
+    print("  [DIAGNOSTICS] Preprocessor state statistics:")
+    for sf in sorted(pretrained_dir.glob("*preprocessor*.safetensors")):
+        tensors = load_file(str(sf))
+        for key in sorted(tensors.keys()):
+            if "state" in key or "action" in key.lower():
+                t = tensors[key]
+                print(f"    {key}: shape={list(t.shape)} values={t.cpu().numpy().tolist()}")
+    print()
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +559,7 @@ def run_full_evaluation(
 
     all_results = {}
 
-    # ── 1. Fine-tuned model ──
+    # ── 1. Fine-tuned model WITH postprocessing ──
     if finetuned_ckpt is not None:
         print("\n" + "=" * 70)
         print("  MODEL 1: Fine-tuned SmolVLA (WITH postprocessing)")
@@ -510,27 +567,40 @@ def run_full_evaluation(
         policy, postproc, sdim, tok, name = load_finetuned_model(
             finetuned_ckpt, device
         )
+
+        # Print postprocessor normalization stats for diagnosis
+        dump_postprocessor_stats(finetuned_ckpt)
+
         results = evaluate_model_all_tasks(
             policy, postproc, sdim, tok, name,
             task_keys, n_episodes, max_steps, device, camera_size,
         )
-        all_results["fine-tuned"] = results
+        all_results["ft+postproc"] = results
 
-        # Free memory
+        # ── 2. Same fine-tuned model WITHOUT postprocessing ──
+        print("\n" + "=" * 70)
+        print("  MODEL 2: Fine-tuned SmolVLA (NO postprocessing / raw actions)")
+        print("=" * 70)
+        results_raw = evaluate_model_all_tasks(
+            policy, None, sdim, tok, name,  # postprocess_fn=None
+            task_keys, n_episodes, max_steps, device, camera_size,
+        )
+        all_results["ft-raw"] = results_raw
+
         del policy
         torch.cuda.empty_cache()
 
-    # ── 2. Base SmolVLA (no postprocessing) ──
+    # ── 3. Base SmolVLA (no postprocessing) ──
     if not skip_base:
         print("\n" + "=" * 70)
-        print("  MODEL 2: Base SmolVLA (NO postprocessing / raw pretrained)")
+        print("  MODEL 3: Base SmolVLA (NO postprocessing / raw pretrained)")
         print("=" * 70)
         policy, postproc, sdim, tok, name = load_base_model(device)
         results = evaluate_model_all_tasks(
             policy, postproc, sdim, tok, name,
             task_keys, n_episodes, max_steps, device, camera_size,
         )
-        all_results["base (no postproc)"] = results
+        all_results["base-raw"] = results
 
         del policy
         torch.cuda.empty_cache()
