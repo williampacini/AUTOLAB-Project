@@ -5,6 +5,9 @@ Every episode is recorded and tagged success/fail. Supports both single-task
 and multi-task checkpoints — auto-detects expected state dimension from the
 checkpoint's preprocessor stats.
 
+Uses LeRobot's official preprocessing pipeline (make_pre_post_processors)
+which handles language tokenization and input/output normalization.
+
 Usage:
     python eval/eval_nut_assembly.py \
         --checkpoint outputs/checkpoints/smolvla_nut_assembly \
@@ -66,11 +69,7 @@ def find_pretrained_dir(checkpoint_path):
 
 
 def get_state_dim_from_checkpoint(pretrained_dir):
-    """Read expected state dimension from preprocessor stats.
-
-    The preprocessor safetensors files contain observation.state.mean with
-    the correct shape, telling us exactly what state dim the model expects.
-    """
+    """Read expected state dimension from preprocessor stats."""
     try:
         from safetensors.torch import load_file
     except ImportError:
@@ -88,20 +87,28 @@ def get_state_dim_from_checkpoint(pretrained_dir):
     return None
 
 
-def load_policy(checkpoint_path, device="cuda"):
-    """Load trained SmolVLA policy from checkpoint.
+def load_policy_and_processors(checkpoint_path, device="cuda"):
+    """Load SmolVLA policy with its preprocessor and postprocessor.
 
-    Returns (policy, state_dim) where state_dim is auto-detected from
-    the checkpoint's preprocessor stats.
+    The preprocessor handles:
+      - Language tokenization (task string → observation.language.tokens)
+      - Image normalization (using learned dataset stats)
+      - State normalization (using learned dataset stats)
+
+    The postprocessor handles:
+      - Action unnormalization
+
+    Returns (policy, preprocess, postprocess, state_dim).
     """
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
     pretrained_dir = find_pretrained_dir(checkpoint_path)
     print(f"Loading policy from: {pretrained_dir}")
 
-    # Auto-detect state dim before loading (so we can report it)
+    # Auto-detect state dim
     state_dim = get_state_dim_from_checkpoint(pretrained_dir)
 
+    # Load model
     policy = SmolVLAPolicy.from_pretrained(pretrained_dir)
     policy.to(device)
     policy.eval()
@@ -117,8 +124,22 @@ def load_policy(checkpoint_path, device="cuda"):
             print("  WARNING: n_action_steps=1 — inference will be 50x slower!")
             print("  Run: python train/train_smolvla.py --fix-config <checkpoint>")
 
+    # Create preprocessor and postprocessor using LeRobot's factory
+    # This handles tokenization, normalization, and unnormalization
+    try:
+        from lerobot.policies.factory import make_pre_post_processors
+    except ImportError:
+        from lerobot.common.policies.factory import make_pre_post_processors
+
+    preprocess, postprocess = make_pre_post_processors(
+        policy.config,
+        str(pretrained_dir),
+        preprocessor_overrides={"device_processor": {"device": str(device)}},
+    )
+
     print(f"  State dim (from preprocessor): {state_dim}")
-    return policy, state_dim
+    print(f"  Preprocessor + postprocessor loaded")
+    return policy, preprocess, postprocess, state_dim
 
 
 def create_env(camera_size=256):
@@ -171,12 +192,16 @@ def build_state(obs, expected_dim=None):
     return state
 
 
-def get_action(policy, obs, task_language, device="cuda", img_size=256,
-               expected_state_dim=None):
-    """Get action from policy given robosuite observation."""
+def get_action(policy, preprocess, postprocess, obs, task_language,
+               device="cuda", img_size=256, expected_state_dim=None):
+    """Get action from policy given robosuite observation.
+
+    Uses LeRobot's preprocessor for tokenization + normalization,
+    and postprocessor for action unnormalization.
+    """
     from PIL import Image as PILImage
 
-    # Camera 1: agentview (main workspace camera)
+    # Camera 1: agentview (flip for MuJoCo rendering convention)
     agentview = np.flip(obs["agentview_image"], axis=0)
     agentview_pil = PILImage.fromarray(agentview).resize(
         (img_size, img_size), PILImage.LANCZOS
@@ -191,8 +216,9 @@ def get_action(policy, obs, task_language, device="cuda", img_size=256,
     # State vector (auto-matched to training dim)
     state = build_state(obs, expected_state_dim)
 
-    # SmolVLA observation dict
-    obs_dict = {
+    # Build observation frame — images as [0,1] float tensors, state as float tensor
+    # The preprocessor will handle tokenization + normalization
+    obs_frame = {
         "observation.images.image": (
             torch.from_numpy(np.array(agentview_pil))
             .permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
@@ -207,11 +233,23 @@ def get_action(policy, obs, task_language, device="cuda", img_size=256,
         "task": task_language,
     }
 
+    # Preprocess: tokenizes task string + normalizes images/state
+    batch = preprocess(obs_frame)
+
+    # Inference
     with torch.no_grad():
-        action = policy.select_action(obs_dict)
+        action = policy.select_action(batch)
+
+    # Postprocess: unnormalize action
+    action = postprocess(action)
 
     if isinstance(action, torch.Tensor):
         action = action.cpu().numpy().flatten()
+    elif isinstance(action, dict):
+        # Some postprocessors return a dict with "action" key
+        action = action.get("action", action)
+        if isinstance(action, torch.Tensor):
+            action = action.cpu().numpy().flatten()
 
     return np.clip(action[:7], -1, 1)
 
@@ -231,7 +269,9 @@ def save_video(frames, path, fps):
 
 def evaluate(args):
     """Run evaluation on NutAssembly."""
-    policy, state_dim = load_policy(args.checkpoint, args.device)
+    policy, preprocess, postprocess, state_dim = load_policy_and_processors(
+        args.checkpoint, args.device,
+    )
     env = create_env(args.camera_size)
 
     task_language = (
@@ -283,7 +323,8 @@ def evaluate(args):
 
         for step in range(args.max_steps):
             action = get_action(
-                policy, obs, task_language, args.device,
+                policy, preprocess, postprocess,
+                obs, task_language, args.device,
                 args.camera_size, state_dim,
             )
             obs, reward, done, info = env.step(action)
