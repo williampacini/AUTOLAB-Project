@@ -137,9 +137,14 @@ def load_policy_and_processors(checkpoint_path, device="cuda"):
         preprocessor_overrides={"device_processor": {"device": str(device)}},
     )
 
+    # Load tokenizer for language tokenization (preprocessor doesn't handle it)
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
+    print(f"  Tokenizer loaded — vocab size: {tokenizer.vocab_size}")
+
     print(f"  State dim (from preprocessor): {state_dim}")
     print(f"  Preprocessor + postprocessor loaded")
-    return policy, preprocess, postprocess, state_dim
+    return policy, preprocess, postprocess, state_dim, tokenizer
 
 
 def create_env(camera_size=256):
@@ -192,12 +197,12 @@ def build_state(obs, expected_dim=None):
     return state
 
 
-def get_action(policy, preprocess, postprocess, obs, task_language,
+def get_action(policy, preprocess, postprocess, obs, task_language, tokenizer,
                device="cuda", img_size=256, expected_state_dim=None):
     """Get action from policy given robosuite observation.
 
-    Uses LeRobot's preprocessor for tokenization + normalization,
-    and postprocessor for action unnormalization.
+    Manually tokenizes the task language and uses LeRobot's preprocessor
+    for image/state normalization, and postprocessor for action unnormalization.
     """
     from PIL import Image as PILImage
 
@@ -216,9 +221,17 @@ def get_action(policy, preprocess, postprocess, obs, task_language,
     # State vector (auto-matched to training dim)
     state = build_state(obs, expected_state_dim)
 
-    # Build observation frame — images as [0,1] float tensors, state as float tensor
-    # The preprocessor will handle tokenization + normalization
-    obs_frame = {
+    # Tokenize language instruction
+    tokens = tokenizer(
+        task_language,
+        return_tensors="pt",
+        padding="max_length",
+        max_length=256,
+        truncation=True,
+    )
+
+    # Build observation dict with tokenized language
+    obs_dict = {
         "observation.images.image": (
             torch.from_numpy(np.array(agentview_pil))
             .permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
@@ -230,15 +243,13 @@ def get_action(policy, preprocess, postprocess, obs, task_language,
         "observation.state": (
             torch.from_numpy(state).unsqueeze(0).to(device)
         ),
-        "task": task_language,
+        "observation.language.tokens": tokens["input_ids"].to(device),
+        "observation.language.attention_mask": tokens["attention_mask"].bool().to(device),
     }
-
-    # Preprocess: tokenizes task string + normalizes images/state
-    batch = preprocess(obs_frame)
 
     # Inference
     with torch.no_grad():
-        action = policy.select_action(batch)
+        action = policy.select_action(obs_dict)
 
     # Postprocess: unnormalize action
     action = postprocess(action)
@@ -246,7 +257,6 @@ def get_action(policy, preprocess, postprocess, obs, task_language,
     if isinstance(action, torch.Tensor):
         action = action.cpu().numpy().flatten()
     elif isinstance(action, dict):
-        # Some postprocessors return a dict with "action" key
         action = action.get("action", action)
         if isinstance(action, torch.Tensor):
             action = action.cpu().numpy().flatten()
@@ -269,7 +279,7 @@ def save_video(frames, path, fps):
 
 def evaluate(args):
     """Run evaluation on NutAssembly."""
-    policy, preprocess, postprocess, state_dim = load_policy_and_processors(
+    policy, preprocess, postprocess, state_dim, tokenizer = load_policy_and_processors(
         args.checkpoint, args.device,
     )
     env = create_env(args.camera_size)
@@ -324,7 +334,7 @@ def evaluate(args):
         for step in range(args.max_steps):
             action = get_action(
                 policy, preprocess, postprocess,
-                obs, task_language, args.device,
+                obs, task_language, tokenizer, args.device,
                 args.camera_size, state_dim,
             )
             obs, reward, done, info = env.step(action)

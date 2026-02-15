@@ -39,6 +39,13 @@ torch.load = _patched_torch_load
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def load_tokenizer():
+    """Load the SmolVLM2 tokenizer for language tokenization."""
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
+    return tokenizer
+
+
 def load_policy(checkpoint_path, device="cuda"):
     """Load a trained SmolVLA policy from checkpoint."""
     try:
@@ -78,7 +85,7 @@ def create_env(suite_name, task_id):
     return env, task, task_suite
 
 
-def get_action(policy, obs, task_language, device="cuda"):
+def get_action(policy, obs, task_language, tokenizer, device="cuda"):
     """Get action from policy given observation."""
     if policy is None:
         return np.random.uniform(-0.3, 0.3, size=7)
@@ -106,6 +113,15 @@ def get_action(policy, obs, task_language, device="cuda"):
     eef_quat = obs.get("robot0_eef_quat", np.zeros(4))
     state = np.concatenate([eef_pos, eef_quat]).astype(np.float32)
 
+    # Tokenize language instruction
+    tokens = tokenizer(
+        task_language,
+        return_tensors="pt",
+        padding="max_length",
+        max_length=256,
+        truncation=True,
+    )
+
     # SmolVLA expects observation.images.image / observation.images.image2
     obs_dict = {
         "observation.images.image": (
@@ -119,7 +135,8 @@ def get_action(policy, obs, task_language, device="cuda"):
         "observation.state": (
             torch.from_numpy(state).unsqueeze(0).to(device)
         ),
-        "task": task_language,
+        "observation.language.tokens": tokens["input_ids"].to(device),
+        "observation.language.attention_mask": tokens["attention_mask"].bool().to(device),
     }
 
     with torch.no_grad():
@@ -132,7 +149,7 @@ def get_action(policy, obs, task_language, device="cuda"):
 
 
 def run_episode(env, policy, task, task_suite, task_id, episode_idx,
-                max_steps=600, device="cuda", record=False):
+                max_steps=600, device="cuda", record=False, tokenizer=None):
     """Run a single evaluation episode.
 
     Returns:
@@ -157,7 +174,7 @@ def run_episode(env, policy, task, task_suite, task_id, episode_idx,
     total_reward = 0.0
 
     for step in range(max_steps):
-        action = get_action(policy, obs, task.language, device=device)
+        action = get_action(policy, obs, task.language, tokenizer, device=device)
         obs, reward, done, info = env.step(action)
         total_reward += reward
 
@@ -186,6 +203,7 @@ def evaluate_suite(checkpoint_path, suite_name, n_episodes=50, max_steps=600,
 
     np.random.seed(seed)
     policy = load_policy(checkpoint_path, device=device)
+    tokenizer = load_tokenizer()
 
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[suite_name]()
@@ -216,6 +234,7 @@ def evaluate_suite(checkpoint_path, suite_name, n_episodes=50, max_steps=600,
             success, reward, frames = run_episode(
                 env, policy, task, task_suite_obj, task_id, ep,
                 max_steps=max_steps, device=device, record=record,
+                tokenizer=tokenizer,
             )
 
             if success:

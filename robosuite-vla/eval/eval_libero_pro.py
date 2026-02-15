@@ -188,10 +188,11 @@ def evaluate_pro(checkpoint_path, suite_name, perturbation_types=None,
                  n_episodes=50, max_steps=600, device="cuda", seed=42, output_dir=None):
     """Run LIBERO-PRO evaluation across perturbation types."""
     # Import here to avoid import before env var setting
-    from eval.eval_libero import load_policy, create_env, get_action
+    from eval.eval_libero import load_policy, load_tokenizer, create_env, get_action
 
     perturbation_types = perturbation_types or PERTURBATION_TYPES
     policy = load_policy(checkpoint_path, device=device)
+    tokenizer = load_tokenizer()
 
     from libero.libero import benchmark
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -246,7 +247,7 @@ def evaluate_pro(checkpoint_path, suite_name, perturbation_types=None,
                     # Run episode
                     success = False
                     for step in range(max_steps):
-                        action = get_action(policy, obs, perturbed_instruction, device=device)
+                        action = get_action(policy, obs, perturbed_instruction, tokenizer, device=device)
                         obs, reward, done, info = env.step(action)
                         if done:
                             success = bool(reward > 0)
