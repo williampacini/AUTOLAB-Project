@@ -95,19 +95,48 @@ def create_env(suite_name, task_id):
     return env, task, task_suite
 
 
+def _get_model_image_keys(policy):
+    """Get expected image keys from model config.
+    Base model uses camera1/camera2/camera3; fine-tuned uses image/image2.
+    """
+    if hasattr(policy.config, 'input_features'):
+        keys = sorted([
+            k for k in policy.config.input_features
+            if k.startswith("observation.images")
+        ])
+        if keys:
+            return keys
+    return ["observation.images.image", "observation.images.image2"]
+
+
+def _get_model_state_dim(policy):
+    """Get expected state dimension from model config."""
+    if hasattr(policy.config, 'input_features'):
+        feat = policy.config.input_features.get("observation.state")
+        if feat is not None:
+            shape = getattr(feat, 'shape', None)
+            if shape is None and isinstance(feat, dict):
+                shape = feat.get('shape')
+            if shape is not None:
+                return shape[0] if isinstance(shape, (list, tuple)) else shape
+    return 7
+
+
 def get_action(policy, preprocess, postprocess, obs, task_language, device="cuda"):
     """Get action from policy given observation.
 
-    Uses the LeRobot preprocessor/postprocessor pipeline for correct:
-      - Language tokenization (task string -> token IDs)
-      - State normalization (MEAN_STD using dataset statistics)
-      - Action unnormalization (MEAN_STD using dataset statistics)
+    Dynamically adapts to the model's expected image keys and state dimension
+    so this works for both the base model (camera1/camera2/camera3, state=6)
+    and fine-tuned models (image/image2, state=7).
     """
     if policy is None:
         return np.random.uniform(-0.3, 0.3, size=7)
 
     from PIL import Image as PILImage
     from lerobot.policies.utils import prepare_observation_for_inference
+
+    image_keys = _get_model_image_keys(policy)
+    expected_state_dim = _get_model_state_dim(policy)
 
     # Camera 1: agentview (main workspace camera)
     agentview = np.flip(
@@ -123,17 +152,24 @@ def get_action(policy, preprocess, postprocess, obs, task_language, device="cuda
     else:
         wrist = np.zeros((256, 256, 3), dtype=np.uint8)
 
-    # Build state from actual robot proprioception
+    # Build state from actual robot proprioception, adjust to expected dim
     eef_pos = obs.get("robot0_eef_pos", np.zeros(3))
     eef_quat = obs.get("robot0_eef_quat", np.zeros(4))
     state = np.concatenate([eef_pos, eef_quat]).astype(np.float32)
+    if len(state) > expected_state_dim:
+        state = state[:expected_state_dim]
+    elif len(state) < expected_state_dim:
+        state = np.pad(state, (0, expected_state_dim - len(state)))
 
-    # Raw observation dict with LeRobot keys (numpy arrays)
-    raw_obs = {
-        "observation.images.image": agentview,
-        "observation.images.image2": wrist,
-        "observation.state": state,
-    }
+    # Build observation dict using model's expected image keys
+    cameras = [agentview, wrist]
+    raw_obs = {}
+    for i, key in enumerate(image_keys):
+        if i < len(cameras):
+            raw_obs[key] = cameras[i]
+        else:
+            raw_obs[key] = np.zeros((256, 256, 3), dtype=np.uint8)
+    raw_obs["observation.state"] = state
 
     # Convert to tensors, normalize images to [0,1], add batch dim, move to device
     obs_frame = prepare_observation_for_inference(raw_obs, device, task=task_language)
