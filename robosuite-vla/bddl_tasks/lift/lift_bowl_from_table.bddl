@@ -1,0 +1,37 @@
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language pick up the black bowl from the table)
+    (:regions
+      (bowl_init_region
+          (:target main_table)
+          (:ranges (
+              (-0.03 -0.03 0.03 0.03)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.283)
+            )
+          )
+      )
+    )
+
+  (:fixtures
+    main_table - table
+  )
+
+  (:objects
+    akita_black_bowl_1 - akita_black_bowl
+  )
+
+  (:obj_of_interest
+    akita_black_bowl_1
+  )
+
+  (:init
+    (On akita_black_bowl_1 main_table_bowl_init_region)
+  )
+
+  (:goal
+    (And (Up akita_black_bowl_1))
+  )
+)

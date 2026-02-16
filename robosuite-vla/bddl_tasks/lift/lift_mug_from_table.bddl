@@ -1,0 +1,37 @@
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language pick up the red mug from the table)
+    (:regions
+      (mug_init_region
+          (:target main_table)
+          (:ranges (
+              (-0.03 -0.03 0.03 0.03)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.283)
+            )
+          )
+      )
+    )
+
+  (:fixtures
+    main_table - table
+  )
+
+  (:objects
+    red_coffee_mug_1 - red_coffee_mug
+  )
+
+  (:obj_of_interest
+    red_coffee_mug_1
+  )
+
+  (:init
+    (On red_coffee_mug_1 main_table_mug_init_region)
+  )
+
+  (:goal
+    (And (Up red_coffee_mug_1))
+  )
+)

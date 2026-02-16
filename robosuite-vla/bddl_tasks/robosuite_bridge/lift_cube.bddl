@@ -1,0 +1,37 @@
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language pick up the red cube from the table)
+    (:regions
+      (cube_init_region
+          (:target main_table)
+          (:ranges (
+              (-0.03 -0.03 0.03 0.03)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.283)
+            )
+          )
+      )
+    )
+
+  (:fixtures
+    main_table - table
+  )
+
+  (:objects
+    robosuite_cube_1 - robosuite_cube
+  )
+
+  (:obj_of_interest
+    robosuite_cube_1
+  )
+
+  (:init
+    (On robosuite_cube_1 main_table_cube_init_region)
+  )
+
+  (:goal
+    (And (Up robosuite_cube_1))
+  )
+)

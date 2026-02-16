@@ -1,0 +1,64 @@
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language pick up the black bowl from the center of the table)
+    (:regions
+      (bowl_init_region
+          (:target main_table)
+          (:ranges (
+              (-0.02 -0.02 0.02 0.02)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.283)
+            )
+          )
+      )
+      (plate_region
+          (:target main_table)
+          (:ranges (
+              (0.12 0.15 0.16 0.19)
+            )
+          )
+      )
+      (ramekin_region
+          (:target main_table)
+          (:ranges (
+              (-0.18 0.12 -0.14 0.16)
+            )
+          )
+      )
+      (cookies_region
+          (:target main_table)
+          (:ranges (
+              (0.08 -0.18 0.12 -0.14)
+            )
+          )
+      )
+    )
+
+  (:fixtures
+    main_table - table
+  )
+
+  (:objects
+    akita_black_bowl_1 - akita_black_bowl
+    plate_1 - plate
+    glazed_rim_porcelain_ramekin_1 - glazed_rim_porcelain_ramekin
+    cookies_1 - cookies
+  )
+
+  (:obj_of_interest
+    akita_black_bowl_1
+  )
+
+  (:init
+    (On akita_black_bowl_1 main_table_bowl_init_region)
+    (On plate_1 main_table_plate_region)
+    (On glazed_rim_porcelain_ramekin_1 main_table_ramekin_region)
+    (On cookies_1 main_table_cookies_region)
+  )
+
+  (:goal
+    (And (Up akita_black_bowl_1))
+  )
+)
