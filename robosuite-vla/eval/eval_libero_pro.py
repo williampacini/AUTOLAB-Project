@@ -191,7 +191,7 @@ def evaluate_pro(checkpoint_path, suite_name, perturbation_types=None,
     from eval.eval_libero import load_policy, create_env, get_action
 
     perturbation_types = perturbation_types or PERTURBATION_TYPES
-    policy = load_policy(checkpoint_path, device=device)
+    policy, preprocess, postprocess = load_policy(checkpoint_path, device=device)
 
     from libero.libero import benchmark
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -246,7 +246,8 @@ def evaluate_pro(checkpoint_path, suite_name, perturbation_types=None,
                     # Run episode
                     success = False
                     for step in range(max_steps):
-                        action = get_action(policy, obs, perturbed_instruction, device=device)
+                        action = get_action(policy, preprocess, postprocess,
+                                            obs, perturbed_instruction, device=device)
                         obs, reward, done, info = env.step(action)
                         if done:
                             success = bool(reward > 0)

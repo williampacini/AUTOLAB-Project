@@ -40,18 +40,35 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_policy(checkpoint_path, device="cuda"):
-    """Load a trained SmolVLA policy from checkpoint."""
+    """Load a trained SmolVLA policy with preprocessor/postprocessor pipelines.
+
+    Returns (policy, preprocess, postprocess) tuple.
+    The preprocessor handles language tokenization and state normalization.
+    The postprocessor handles action unnormalization.
+    """
     try:
         from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+        from lerobot.policies.factory import make_pre_post_processors
+
         policy = SmolVLAPolicy.from_pretrained(checkpoint_path)
         policy.to(device)
         policy.eval()
+
+        # Load preprocessor/postprocessor from saved model configs.
+        # These contain the dataset normalization stats (mean/std for state & action)
+        # and the tokenizer config for language instructions.
+        preprocess, postprocess = make_pre_post_processors(
+            policy.config,
+            checkpoint_path,
+            preprocessor_overrides={"device_processor": {"device": str(device)}},
+        )
+
         print(f"Loaded policy from {checkpoint_path}")
-        return policy
+        return policy, preprocess, postprocess
     except Exception as e:
         print(f"Failed to load policy: {e}")
         print("Using random policy for testing.")
-        return None
+        return None, None, None
 
 
 def create_env(suite_name, task_id):
@@ -78,52 +95,58 @@ def create_env(suite_name, task_id):
     return env, task, task_suite
 
 
-def get_action(policy, obs, task_language, device="cuda"):
-    """Get action from policy given observation."""
+def get_action(policy, preprocess, postprocess, obs, task_language, device="cuda"):
+    """Get action from policy given observation.
+
+    Uses the LeRobot preprocessor/postprocessor pipeline for correct:
+      - Language tokenization (task string -> token IDs)
+      - State normalization (MEAN_STD using dataset statistics)
+      - Action unnormalization (MEAN_STD using dataset statistics)
+    """
     if policy is None:
         return np.random.uniform(-0.3, 0.3, size=7)
 
     from PIL import Image as PILImage
+    from lerobot.policies.utils import prepare_observation_for_inference
 
     # Camera 1: agentview (main workspace camera)
     agentview = np.flip(
         obs.get("agentview_image", np.zeros((128, 128, 3), dtype=np.uint8)), axis=0
-    )
-    agentview_pil = PILImage.fromarray(agentview).resize((256, 256))
+    ).copy()
+    agentview = np.array(PILImage.fromarray(agentview).resize((256, 256)))
 
     # Camera 2: wrist / eye-in-hand camera
     wrist = obs.get("robot0_eye_in_hand_image", None)
     if wrist is not None:
-        wrist = np.flip(wrist, axis=0)
-        wrist_pil = PILImage.fromarray(wrist).resize((256, 256))
+        wrist = np.flip(wrist, axis=0).copy()
+        wrist = np.array(PILImage.fromarray(wrist).resize((256, 256)))
     else:
-        wrist_pil = PILImage.fromarray(
-            np.zeros((128, 128, 3), dtype=np.uint8)
-        ).resize((256, 256))
+        wrist = np.zeros((256, 256, 3), dtype=np.uint8)
 
     # Build state from actual robot proprioception
     eef_pos = obs.get("robot0_eef_pos", np.zeros(3))
     eef_quat = obs.get("robot0_eef_quat", np.zeros(4))
     state = np.concatenate([eef_pos, eef_quat]).astype(np.float32)
 
-    # SmolVLA expects observation.images.image / observation.images.image2
-    obs_dict = {
-        "observation.images.image": (
-            torch.from_numpy(np.array(agentview_pil))
-            .permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
-        ),
-        "observation.images.image2": (
-            torch.from_numpy(np.array(wrist_pil))
-            .permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
-        ),
-        "observation.state": (
-            torch.from_numpy(state).unsqueeze(0).to(device)
-        ),
-        "task": task_language,
+    # Raw observation dict with LeRobot keys (numpy arrays)
+    raw_obs = {
+        "observation.images.image": agentview,
+        "observation.images.image2": wrist,
+        "observation.state": state,
     }
 
+    # Convert to tensors, normalize images to [0,1], add batch dim, move to device
+    obs_frame = prepare_observation_for_inference(raw_obs, device, task=task_language)
+
+    # Preprocess: tokenize language, normalize state (MEAN_STD)
+    obs_preprocessed = preprocess(obs_frame)
+
+    # Model inference
     with torch.no_grad():
-        action = policy.select_action(obs_dict)
+        action = policy.select_action(obs_preprocessed)
+
+    # Postprocess: unnormalize action (MEAN_STD)
+    action = postprocess(action)
 
     if isinstance(action, torch.Tensor):
         action = action.cpu().numpy().flatten()
@@ -131,8 +154,8 @@ def get_action(policy, obs, task_language, device="cuda"):
     return np.clip(action[:7], -1, 1)
 
 
-def run_episode(env, policy, task, task_suite, task_id, episode_idx,
-                max_steps=600, device="cuda", record=False):
+def run_episode(env, policy, preprocess, postprocess, task, task_suite,
+                task_id, episode_idx, max_steps=600, device="cuda", record=False):
     """Run a single evaluation episode.
 
     Returns:
@@ -157,7 +180,8 @@ def run_episode(env, policy, task, task_suite, task_id, episode_idx,
     total_reward = 0.0
 
     for step in range(max_steps):
-        action = get_action(policy, obs, task.language, device=device)
+        action = get_action(policy, preprocess, postprocess, obs,
+                            task.language, device=device)
         obs, reward, done, info = env.step(action)
         total_reward += reward
 
@@ -185,7 +209,7 @@ def evaluate_suite(checkpoint_path, suite_name, n_episodes=50, max_steps=600,
     from libero.libero import benchmark
 
     np.random.seed(seed)
-    policy = load_policy(checkpoint_path, device=device)
+    policy, preprocess, postprocess = load_policy(checkpoint_path, device=device)
 
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[suite_name]()
@@ -214,7 +238,8 @@ def evaluate_suite(checkpoint_path, suite_name, n_episodes=50, max_steps=600,
         for ep in pbar:
             record = (ep % record_freq == 0) if record_freq > 0 else False
             success, reward, frames = run_episode(
-                env, policy, task, task_suite_obj, task_id, ep,
+                env, policy, preprocess, postprocess, task,
+                task_suite_obj, task_id, ep,
                 max_steps=max_steps, device=device, record=record,
             )
 

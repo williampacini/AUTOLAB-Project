@@ -99,6 +99,54 @@ Each demo contains:
 After training, change `n_action_steps` from 1 to 50 in model config.json
 before inference. Without this, inference is 50× slower.
 
+### SmolVLA Inference Pipeline (CRITICAL)
+**Must use LeRobot's preprocessor/postprocessor pipeline**, NOT manual obs construction.
+
+```python
+from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+from lerobot.policies.factory import make_pre_post_processors
+from lerobot.policies.utils import prepare_observation_for_inference
+
+# 1. Load model + processors
+policy = SmolVLAPolicy.from_pretrained(checkpoint_path)
+preprocess, postprocess = make_pre_post_processors(
+    policy.config, checkpoint_path,
+    preprocessor_overrides={"device_processor": {"device": "cuda"}},
+)
+
+# 2. Build raw obs dict (numpy arrays with LeRobot keys)
+raw_obs = {
+    "observation.images.image": agentview_np,      # (H, W, 3) uint8
+    "observation.images.image2": wrist_np,          # (H, W, 3) uint8
+    "observation.state": state_np,                  # (7,) float32
+}
+
+# 3. Convert to tensors + normalize images + batch dim
+obs_frame = prepare_observation_for_inference(raw_obs, device, task="task text")
+
+# 4. Preprocess: tokenize language, normalize state (MEAN_STD)
+obs = preprocess(obs_frame)
+
+# 5. Inference
+action = policy.select_action(obs)
+
+# 6. Postprocess: unnormalize action (MEAN_STD)
+action = postprocess(action)
+```
+
+The preprocessor handles:
+- Language tokenization (task string → `observation.language.tokens` + `attention_mask`)
+- State normalization (MEAN_STD using saved dataset statistics)
+- Batch dimension management
+
+The postprocessor handles:
+- Action unnormalization (MEAN_STD using saved dataset statistics)
+
+**DO NOT** manually apply ImageNet normalization to images — SmolVLA's internal
+`prepare_images` handles converting from [0,1] to [-1,1] and resizing to 512×512.
+**DO NOT** manually tokenize with `AutoTokenizer` — the preprocessor pipeline does this.
+**DO NOT** pass raw (unnormalized) state to `select_action` — it needs MEAN_STD normalization.
+
 ## Data Sources
 - **Primary**: LIBERO human teleoperation demos (50/task, SpaceMouse, 20Hz)
 - **Pretrained base**: SmolVLA pretrained on 10M frames from 487 LeRobot datasets
